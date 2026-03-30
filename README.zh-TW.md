@@ -3,7 +3,7 @@
   <samp>本地 AI。智慧路由。你的知識庫。</samp>
   <br><br>
 
-  # 🧠 RAG-Kura
+  <img src="assets/logo.svg" alt="RAG-Kura Logo" width="800">
 
 </div>
 

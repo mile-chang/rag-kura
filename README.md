@@ -3,7 +3,7 @@
   <samp>Local AI. Smart Routing. Your Knowledge.</samp>
   <br><br>
 
-  # 🧠 RAG-Kura
+  <img src="assets/logo.svg" alt="RAG-Kura Logo" width="800">
 
 </div>
 

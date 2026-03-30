@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 200" width="100%" height="auto" style="max-width: 700px;">
+  <defs>
+    <!-- Responsive Text Color for GitHub Light/Dark Mode -->
+    <style>
+      .kura-text { fill: #0f172a; }
+      @media (prefers-color-scheme: dark) {
+        .kura-text { fill: #ffffff; }
+      }
+    </style>
+
+    <!-- RAG Text Gradient -->
+    <linearGradient id="text-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00f2fe" />
+      <stop offset="100%" stop-color="#4facfe" />
+    </linearGradient>
+
+    <!-- Icon Base Gradient -->
+    <linearGradient id="icon-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4facfe" />
+      <stop offset="100%" stop-color="#00f2fe" />
+    </linearGradient>
+
+    <!-- Glow Effect for AI Nodes -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Logo Icon Group (Left Side) -->
+  <g transform="translate(60, 80)">
+    <!-- Central Beam / Server Rack Stack -->
+    <rect x="25" y="40" width="90" height="25" rx="4" fill="none" stroke="#64748b" stroke-width="3"/>
+    <rect x="25" y="75" width="90" height="25" rx="4" fill="none" stroke="#64748b" stroke-width="3"/>
+
+    <!-- Kura Roof (蔵) / AI Abstract Crown -->
+    <polygon points="10,30 70,-10 130,30" fill="url(#icon-grad)" />
+
+    <!-- AI Connection Nodes -->
+    <circle cx="70" cy="52" r="5" fill="#00f2fe" filter="url(#glow)"/>
+    <circle cx="50" cy="87" r="5" fill="#4facfe" filter="url(#glow)"/>
+    <circle cx="90" cy="87" r="5" fill="#4facfe" filter="url(#glow)"/>
+
+    <!-- Connecting dashed lines -->
+    <line x1="70" y1="52" x2="50" y2="87" stroke="#00f2fe" stroke-width="2" stroke-dasharray="3,3" opacity="0.6"/>
+    <line x1="70" y1="52" x2="90" y2="87" stroke="#00f2fe" stroke-width="2" stroke-dasharray="3,3" opacity="0.6"/>
+
+    <!-- Top AI Node Antenna -->
+    <circle cx="70" cy="-10" r="8" fill="#ffffff" filter="url(#glow)"/>
+    <path d="M 70 -10 L 70 -40 M 70 -40 L 95 -60 M 70 -40 L 45 -60" stroke="#00f2fe" stroke-width="3" fill="none" stroke-linecap="round"/>
+    <circle cx="95" cy="-60" r="6" fill="#00f2fe" filter="url(#glow)"/>
+    <circle cx="45" cy="-60" r="6" fill="#00f2fe" filter="url(#glow)"/>
+  </g>
+
+  <!-- Logotype Text (Right Side) -->
+  <text x="215" y="125" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="76" font-weight="900" fill="url(#text-grad)" letter-spacing="3">
+    RAG<tspan class="kura-text">-KURA</tspan>
+  </text>
+</svg>
