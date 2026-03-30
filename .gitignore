@@ -1,0 +1,57 @@
+# ========== Virtual Environment ==========
+.venv/
+env/
+venv/
+
+# ========== Python Cache & Build ==========
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.whl
+
+# ========== Secrets & Environment Variables ==========
+.env
+.env.*
+.env.local
+.env.production
+*.key
+*.pem
+*.crt
+
+# ========== Database & Storage ==========
+*.db
+*.sqlite
+*.sqlite3
+*.sql.bak
+chroma_db/
+vector_store/
+faiss_index/
+
+# ========== RAG Data & Uploads ==========
+# Exclude user-uploaded documents (may contain sensitive data)
+uploads/
+data/private/
+
+# ========== Logs ==========
+logs/
+*.log
+
+# ========== IDE & Editor ==========
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ========== OS Files ==========
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========== AI Tooling ==========
+.gemini/
+.agents/
+skills-lock.json
