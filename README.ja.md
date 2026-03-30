@@ -3,7 +3,9 @@
   <samp>ローカルAI。スマートルーティング。あなたのナレッジ。</samp>
   <br><br>
 
-  <img src="assets/logo.svg" alt="RAG-Kura Logo" width="800">
+  <a href="https://github.com/mile-chang/rag-kura">
+    <img src="assets/logo.svg" alt="RAG-Kura Logo" width="500">
+  </a>
 
 </div>
 
