@@ -26,30 +26,34 @@ RAG-Kura は、FastAPI と Ollama で構築されたローカルファースト�
 
 ## 主な機能
 
-- **検索拡張生成（RAG）** — ChromaDBを統合し、ローカルドキュメントの知識に基づいて質問に応答
-- **モデルレジストリ** — 全登録モデルの機能を一元宣言
-- **ビジョンガード** — 画像リクエストをテキスト専用モデルに送信した場合、自動拒否（HTTP 400）
-- **動的推論トグル** — 思考連鎖の制御に2つの戦略を提供：
-  - `parameter` — ストップトークン注入で `<think>` ブロックを抑制
-  - `model_switch` — 実行時に専用推論モデルへ切り替え
-- **ローカルファースト** — 推論とエンベディングはすべてローカルで実行され、クラウド API は不要
-- **拡張容易** — モデル追加は辞書を1つ編集するだけ
+- **検索拡張生成 (RAG)** — ChromaDBを統合し、ローカルドキュメントの知識に基づいて質問に応答。
+- **モダンなチャット UI (SPA)** — HTML/CSS/JS で構築されたレスポンシブなシングルページアプリケーション。
+- **生成の中断/停止** — モデルの回答を即座に停止し、ユーザーのコントロール性を向上。
+- **動的推論トグル (思考モード)** — 推論モデル向けに `parameter` と `model_switch` 戦略をサポート。
+- **スマートなロード UI** — モデルの VRAM 状態をリアルタイムで検知し、ロード中のインジケーターを表示。
+- **対話の永続化** — SQLite による履歴保存、タイトルの自動生成および手動編集に対応。
+- **モデルレジストリ** — 全登録モデルの機能を一元管理し、最適なルーティングを実現。
+- **セキュリティ & 機能ガード** — 非対応機能（テキスト専用モデルへの画像送信など）のリクエストを自動的にブロック。
 
 ## システムアーキテクチャ
 
 ```mermaid
 graph TB
-    subgraph "クライアント"
-        FE[フロントエンド / curl]
+    subgraph "フロントエンド"
+        UI[Chat SPA - HTML/JS]
     end
 
     subgraph "FastAPI バックエンド"
-        ROUTER[リクエストルーター]
-        GUARD[機能ガード]
-        REG[モデルレジストリ]
+        ROUTER[REST API / ルーター]
+        DB[(SQLite - 対話履歴)]
+        REG[Model Registry]
     end
 
-    subgraph "Ollama ランタイム"
+    subgraph "ベクトルストア (RAG)"
+        CHROMA[(ChromaDB)]
+    end
+
+    subgraph "Ollama 推論エンジン"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
@@ -57,39 +61,37 @@ graph TB
         P4R[phi4-mini-reasoning]
     end
 
-    subgraph "ベクトルデータベース"
-        CHROMA[(ChromaDB)]
-    end
-
-    FE -->|POST /chat| ROUTER
+    UI -->|API リクエスト| ROUTER
+    ROUTER --> DB
     ROUTER -->|類似度検索| CHROMA
-    CHROMA -->|Context| ROUTER
-    ROUTER --> GUARD
-    GUARD --> REG
-    REG -->|parameter 戦略| Q2
-    REG -->|parameter 戦略| Q4
+    ROUTER --> REG
+    REG -->|自動ルーティング| Q2
+    REG -->|自動ルーティング| Q4
     REG -->|直接推論| L3
     REG -->|model_switch| P4
-    REG -->|推論モード| P4R
+    REG -->|思考モード| P4R
 
     style ROUTER fill:#009688
-    style GUARD fill:#F44336
+    style DB fill:#795548
     style REG fill:#2196F3
 ```
 
-## 登録済みモデル
+## 登録済みモデル (Ollama)
 
-| モデル | ビジョン | 推論戦略 | 備考 |
-|--------|----------|----------|------|
-| `qwen3.5:2b` | ✅ | `parameter` | ストップトークンで `<think>` を制御 |
-| `qwen3.5:4b` | ✅ | `parameter` | 同上（デフォルトモデル） |
-| `llama3.2:3b` | ❌ | `none` | 推論トグルなし |
-| `phi4-mini` | ❌ | `model_switch` | `phi4-mini-reasoning` に切り替え |
+各モデルの推論特性に合わせた最適化設定：
+
+| モデル | 推論戦略 | 備考 |
+|--------|----------|------|
+| [**qwen3.5:2b**](https://ollama.com/library/qwen3.5) | `parameter` | パラメータ注入により `Think` モード切替に対応 |
+| [**qwen3.5:4b**](https://ollama.com/library/qwen3.5) | `parameter` | 同上 |
+| [**llama3.2:3b**](https://ollama.com/library/llama3.2) | `none` | 標準的な対話モデル、推論切替なし |
+| [**phi4-mini**](https://ollama.com/library/phi4-mini) | `model_switch` | 推論時に `phi4-mini-reasoning` へ自動切り替え |
 
 ## 前提条件
 
 - Python 3.12+
-- [Ollama](https://ollama.com/) インストール済み、必要なモデルをプル済み
+- [**Ollama**](https://ollama.com/) インストール済み、必要なモデルをプル済み
+- **PyTorch (CPU 版)**：デフォルトで CPU を使用し、Ollama 用の VRAM を節約します。VRAM に余裕がある場合は、GPU 版のインストールも可能です。
 
 ## ローカル開発
 
@@ -98,112 +100,79 @@ graph TB
 git clone https://github.com/mile-chang/rag-kura.git
 cd rag-kura
 
-# 仮想環境の作成と依存パッケージのインストール
+# 環境構築
 python3 -m venv .venv
 source .venv/bin/activate
+
+# 💡 リソース計画：デフォルトで CPU 版 PyTorch をインストールして VRAM を節約します。十分なリソースがある場合は、この行をスキップして直接 install -r を実行できます。
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
-# ナレッジベースのインジェスト（オプション）
-# Markdown ファイルを docs/ ディレクトリに配置し、以下を実行：
+# ナレッジの取り込み（オプション）
+# Markdown ファイルを docs/ に配置し、以下を実行：
 python ingest.py
 
 # サーバー起動
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
-# → http://localhost:8000
+# ブラウザで開く: http://localhost:8000
 ```
-
-## デプロイ
-
-> 近日公開予定。
 
 ## ロードマップ (Roadmap)
 
-- [x] Phase 1: 環境構築とSSD容量の最適化
-- [x] Phase 2: AIバックエンド基盤の構築 (FastAPI & Ollama)
+- [x] Phase 1: 環境構築と SSD 容量の最適化
+- [x] Phase 2: AI バックエンド基盤の構築 (FastAPI & Ollama)
 - [x] Phase 3: ベクトルデータベースとドキュメント処理 (ローカル ChromaDB)
-- [x] Phase 4: RAGコアロジックの統合 (検索・生成)
-- [ ] Phase 5: Streamlit フロントエンド対話インターフェース
-- [ ] Phase 6: コンテナ化と自動デプロイ (Docker Compose, CI/CD)
+- [x] Phase 4: RAG コアロジックの統合 (検索・生成)
+- [x] Phase 5: モダンなチャット UI (カスタム SPA 実装)
+- [ ] Phase 6: コンテナ化と自動デプロイ (Docker Compose)
 
 詳細なタスクについては `TODO.md` をご参照ください。
 
-## API エンドポイント
+## API エンドポイント (RESTful)
 
 | メソッド | エンドポイント | 説明 |
 |----------|---------------|------|
-| POST | `/chat` | モデル選択・推論モード切替付きメッセージ送信 |
-| GET | `/health` | ヘルスチェック、登録モデル一覧を返却 |
-
-### リクエスト形式
-
-```json
-{
-  "message": "RAGとは何ですか？",
-  "base_model": "qwen3.5:4b",
-  "use_reasoning": false,
-  "has_image": false
-}
-```
-
-### レスポンス形式
-
-```json
-{
-  "model": "qwen3.5:4b",
-  "response": "RAGは検索拡張生成の略で..."
-}
-```
-
-### 使用例：curl
-
-```bash
-# 基本チャット
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "こんにちは、あなたは誰ですか？"}'
-
-# 推論モード有効化
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "量子コンピューティングを説明してください", "use_reasoning": true}'
-
-# ヘルスチェック
-curl http://localhost:8000/health
-```
+| GET | `/api/conversations` | 對話一覧の取得 |
+| POST | `/api/conversations` | 新規対話の作成 |
+| GET | `/api/conversations/{id}` | 對話履歴の取得 |
+| DELETE | `/api/conversations/{id}` | 對話の削除 |
+| PATCH | `/api/conversations/{id}/title` | 對話タイトルの更新 |
+| POST | `/api/conversations/{id}/messages` | メッセージ送信（モデル/推論指定可） |
+| GET | `/api/models/check_loaded` | モデルが VRAM にロードされているか確認 |
 
 ## プロジェクト構成
 
 ```
 rag-kura/
-├── main.py              # FastAPI アプリ（ルーティングと機能ガード）
-├── ingest.py            # ナレッジ取り込みスクリプト（Markdown -> ChromaDB）
+├── main.py              # FastAPI コア & 転送ルーティング
+├── database.py          # SQLite 永続化ロジック
+├── chat_history.db      # SQLite データベース（無視対象）
+├── ingest.py            # ナレッジ取り込みスクリプト
 ├── prompts.py           # システムプロンプトテンプレート
-├── tools.py             # 外部ツールの定義（Web検索、天気など）
-├── docs/                # 取り込み対象のMarkdownファイル用ディレクトリ
-├── chroma_db/           # ChromaDB ベクトルストア（バージョン管理対象外）
-├── requirements.txt     # バージョン固定の Python 依存パッケージ
-├── .gitignore           # セキュリティ重視の除外ルール
-├── .venv/               # 仮想環境（バージョン管理対象外）
-├── README.md            # ドキュメント（English）
-├── README.zh-TW.md      # ドキュメント（繁體中文）
-└── README.ja.md         # ドキュメント（日本語）
+├── tools.py             # 外部ツールの定義
+├── static/              # フロントエンド（index.html, script.js）
+├── docs/                # ナレッジソースディレクトリ
+├── chroma_db/           # ChromaDB ベクトルストア（無視対象）
+├── requirements.txt     # Python 依存パッケージ
+├── README.ja.md         # 日本語ドキュメント
+└── TODO.md              # プロジェクトロードマップ
 ```
 
 ## 技術スタック
 
-| レイヤー | 技術 |
-|----------|------|
-| バックエンド | FastAPI, Pydantic, Uvicorn |
-| RAG | LangChain, HuggingFaceEmbeddings, ChromaDB |
-| 推論 | Ollama（ローカル LLM ランタイム） |
-| モデル | Qwen 3.5, LLaMA 3.2, Phi-4 Mini, bge-small-zh-v1.5 |
+| 分類 | 技術 / モデル | 説明 |
+|------|--------------|------|
+| **チャット UI** | Vanilla JS, Tailwind CSS | モダンな SPA、生成の中断と履歴保存に対応 |
+| **バックエンド核心** | FastAPI, SQLite | 非同期推論、動的ルーティング、永続化に対応 |
+| **知識検索 (RAG)** | LangChain, ChromaDB | ローカルベクトルストア、Markdown 形式に対応 |
+| **埋め込みモデル** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU 実行**、SOTA 中文埋め込み技術、VRAM 節約 |
+| **推論エンジン** | [**Ollama**](https://ollama.com/) | ローカル LLM ランタイム (GPU 推論対応) |
 
 ## セキュリティ
 
-- `.env` による環境シークレット管理（バージョン管理対象外）
-- データベースファイルをバージョン管理から除外（`*.db`, `*.sqlite`）
-- SSL 証明書と秘密鍵を除外（`*.pem`, `*.key`）
-- アップロードディレクトリを除外し、機密データの漏洩を防止
+- `X-Client-ID` ヘッダーによるブラウザレベルの分離。
+- タイトル文字数制限（100文字）とバックエンドでのサニタイズ。
+- アップロード関連の不正パスアクセス防止。
 
 ## ライセンス
 

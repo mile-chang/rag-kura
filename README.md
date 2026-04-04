@@ -24,30 +24,34 @@ RAG-Kura is a local-first knowledge assistant backend built with FastAPI and Oll
 
 ## Key Features
 
-- **Retrieval-Augmented Generation (RAG)** — Integrates ChromaDB to answer questions based on local document knowledge
-- **Model Registry** — Centralized capability declarations for all registered models
-- **Vision Guard** — Automatically rejects image requests sent to text-only models (HTTP 400)
-- **Dynamic Reasoning Toggle** — Two strategies for chain-of-thought control:
-  - `parameter` — Inject stop tokens to suppress `<think>` blocks
-  - `model_switch` — Swap to a dedicated reasoning variant at runtime
-- **Local-first** — All inference and embedding runs on your machine locally, no cloud API required
-- **Extensible** — Add new models by editing a single dictionary
+- **Retrieval-Augmented Generation (RAG)** — Integrates ChromaDB to answer questions based on local document knowledge.
+- **Modern Chat GUI (SPA)** — A responsive single-page application built with HTML/CSS/JS featuring multi-conversation management.
+- **Stop/Interrupt Generation** — Instantly stop model responses to improve user control.
+- **Dynamic Reasoning (Thinking Mode)** — Dedicated toggles for reasoning models with `parameter` and `model_switch` strategies.
+- **Smart Loading UI** — Real-time detection of model VRAM status with "Waking up engine" indicators for cold starts.
+- **Conversation Persistence** — SQLite-backed history with automatic titling and manual title editing support.
+- **Model Registry** — Centralized declaration of model capabilities for intelligent routing.
+- **Security & Capability Guards** — Automatic rejection of unsupported requests (e.g., vision requests to text-only models).
 
 ## System Architecture
 
 ```mermaid
 graph TB
-    subgraph "Client"
-        FE[Frontend / curl]
+    subgraph "Frontend"
+        UI[Chat SPA - HTML/JS]
     end
 
     subgraph "FastAPI Backend"
-        ROUTER[Request Router]
-        GUARD[Capability Guard]
+        ROUTER[REST API / Router]
+        DB[(SQLite - Conversations)]
         REG[Model Registry]
     end
 
-    subgraph "Ollama Runtime"
+    subgraph "Vector Store (RAG)"
+        CHROMA[(ChromaDB)]
+    end
+
+    subgraph "Ollama Engine"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
@@ -55,39 +59,37 @@ graph TB
         P4R[phi4-mini-reasoning]
     end
 
-    subgraph "Vector Database"
-        CHROMA[(ChromaDB)]
-    end
-
-    FE -->|POST /chat| ROUTER
+    UI -->|API Request| ROUTER
+    ROUTER --> DB
     ROUTER -->|Similarity Search| CHROMA
-    CHROMA -->|Context| ROUTER
-    ROUTER --> GUARD
-    GUARD --> REG
-    REG -->|parameter strategy| Q2
-    REG -->|parameter strategy| Q4
-    REG -->|direct| L3
+    ROUTER --> REG
+    REG -->|Auto-routing| Q2
+    REG -->|Auto-routing| Q4
+    REG -->|Direct Inference| L3
     REG -->|model_switch| P4
-    REG -->|reasoning mode| P4R
+    REG -->|Thinking Mode| P4R
 
     style ROUTER fill:#009688
-    style GUARD fill:#F44336
+    style DB fill:#795548
     style REG fill:#2196F3
 ```
 
-## Registered Models
+## Supported Models (Ollama)
 
-| Model | Vision | Reasoning Strategy | Notes |
-|-------|--------|--------------------|-------|
-| `qwen3.5:2b` | ✅ | `parameter` | Stop token injection to toggle `<think>` |
-| `qwen3.5:4b` | ✅ | `parameter` | Same as above (default model) |
-| `llama3.2:3b` | ❌ | `none` | No reasoning toggle |
-| `phi4-mini` | ❌ | `model_switch` | Swaps to `phi4-mini-reasoning` |
+Optimized configurations for specific model inference characteristics:
+
+| Model | Strategy | Notes |
+|-------|----------|-------|
+| [**qwen3.5:2b**](https://ollama.com/library/qwen3.5) | `parameter` | Supports `Think` mode via parameter injection |
+| [**qwen3.5:4b**](https://ollama.com/library/qwen3.5) | `parameter` | Same as above |
+| [**llama3.2:3b**](https://ollama.com/library/llama3.2) | `none` | Standard chat, no reasoning toggle |
+| [**phi4-mini**](https://ollama.com/library/phi4-mini) | `model_switch` | Swaps to `phi4-mini-reasoning` during inference |
 
 ## Prerequisites
 
 - Python 3.12+
-- [Ollama](https://ollama.com/) installed with required models pulled
+- [**Ollama**](https://ollama.com/) installed with required models pulled.
+- **PyTorch (CPU version)**: Defaults to CPU to save VRAM for Ollama; if you have sufficient VRAM, you may install the GPU version.
 
 ## Local Development
 
@@ -96,23 +98,22 @@ graph TB
 git clone https://github.com/mile-chang/rag-kura.git
 cd rag-kura
 
-# Create virtual environment and install dependencies
+# Setup surroundings
 python3 -m venv .venv
 source .venv/bin/activate
+
+# 💡 Resource Planning: Defaults to CPU-only PyTorch to save VRAM. If your hardware is sufficient, skip this line and install via -r directly.
+pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
 
-# Ingest Knowledge Base (Optional)
-# Place Markdown files in the docs/ directory, then run:
+# Ingest Knowledge (Optional)
+# Place Markdown files in docs/, then run:
 python ingest.py
 
 # Start the server
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
-# → http://localhost:8000
+# Open browser at: http://localhost:8000
 ```
-
-## Deployment
-
-> Coming soon.
 
 ## Roadmap
 
@@ -120,88 +121,56 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 - [x] Phase 2: AI Backend Foundation (FastAPI & Ollama)
 - [x] Phase 3: Vector Database & Document Processing (Local ChromaDB)
 - [x] Phase 4: RAG Core Logic Integration (Retriever & Generator)
-- [ ] Phase 5: Streamlit Frontend Interface
-- [ ] Phase 6: Containerization & Deployment (Docker Compose, CI/CD)
+- [x] Phase 5: Modern Chat GUI (Custom SPA implementation)
+- [ ] Phase 6: Containerization & Deployment (Docker Compose)
 
-For detailed tasks, please refer to `TODO.md`.
+Detailed tasks are in `TODO.md`.
 
-## API Endpoints
+## API Endpoints (RESTful)
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/chat` | Send a message with model selection & reasoning toggle |
-| GET | `/health` | Liveness probe; returns registered model list |
-
-### Request Format
-
-```json
-{
-  "message": "What is RAG?",
-  "base_model": "qwen3.5:4b",
-  "use_reasoning": false,
-  "has_image": false
-}
-```
-
-### Response Format
-
-```json
-{
-  "model": "qwen3.5:4b",
-  "response": "RAG stands for Retrieval-Augmented Generation..."
-}
-```
-
-### Example: curl
-
-```bash
-# Basic chat
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello, who are you?"}'
-
-# Enable reasoning mode
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Explain quantum computing", "use_reasoning": true}'
-
-# Health check
-curl http://localhost:8000/health
-```
+| GET | `/api/conversations` | List all conversations |
+| POST | `/api/conversations` | Create a new session |
+| GET | `/api/conversations/{id}`| Get session history |
+| DELETE | `/api/conversations/{id}`| Delete a session |
+| PATCH | `/api/conversations/{id}/title` | Update session title |
+| POST | `/api/conversations/{id}/messages`| Send message (with model/reasoning) |
+| GET | `/api/models/check_loaded` | Check if model is in VRAM |
 
 ## Project Structure
 
 ```
 rag-kura/
-├── main.py              # FastAPI app with routing & capability guards
-├── ingest.py            # Knowledge ingestion script (Markdown -> ChromaDB)
+├── main.py              # FastAPI core & routing
+├── database.py          # SQLite persistence layer
+├── chat_history.db      # SQLite database (gitignored)
+├── ingest.py            # Knowledge ingestion script
 ├── prompts.py           # System prompt templates
-├── tools.py             # External tool definitions (Web Search, Weather, etc.)
-├── docs/                # Directory for Markdown files to be ingested
+├── tools.py             # External tool definitions
+├── static/              # Frontend (index.html, script.js)
+├── docs/                # Knowledge source directory
 ├── chroma_db/           # ChromaDB vector store (gitignored)
-├── requirements.txt     # Pinned Python dependencies
-├── .gitignore           # Security-aware ignore rules
-├── .venv/               # Virtual environment (gitignored)
-├── README.md            # Documentation (English)
-├── README.zh-TW.md      # Documentation (繁體中文)
-└── README.ja.md         # Documentation (日本語)
+├── requirements.txt     # Python dependencies
+├── README.md            # English documentation
+└── TODO.md              # Project roadmap
 ```
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|------------|
-| Backend | FastAPI, Pydantic, Uvicorn |
-| RAG | LangChain, HuggingFaceEmbeddings, ChromaDB |
-| Inference | Ollama (local LLM runtime) |
-| Models | Qwen 3.5, LLaMA 3.2, Phi-4 Mini, bge-small-zh-v1.5 |
+| Category | Tech / Model | Description |
+|----------|--------------|-------------|
+| **Chat Interface** | Vanilla JS, Tailwind CSS | Modern SPA with stop-generation support |
+| **Backend Core** | FastAPI, SQLite | Async execution, dynamic routing, and persistence |
+| **Retrieval (RAG)** | LangChain, ChromaDB | Local vector store, Markdown-based knowledge base |
+| **Embedding Model** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU Only**, SOTA Chinese embeddings, VRAM-efficient |
+| **Inference Engine** | [**Ollama**](https://ollama.com/) | Local model runtime with GPU acceleration |
 
 ## Security
 
-- Environment-based secrets via `.env` (gitignored)
-- Database files excluded from version control (`*.db`, `*.sqlite`)
-- SSL certificates and private keys excluded (`*.pem`, `*.key`)
-- Upload directories excluded to prevent sensitive data leakage
+- Browser-level isolation via `X-Client-ID` header.
+- Title length enforcement (100 chars) with backend sanitization.
+- Unauthorized path traversal protection for uploads.
 
 ## License
 
