@@ -34,6 +34,9 @@ faiss_index/
 # Exclude user-uploaded documents (may contain sensitive data)
 uploads/
 data/private/
+docs/*
+!docs/sample_tech_note.md
+!docs/.gitkeep
 
 # ========== Logs ==========
 logs/
