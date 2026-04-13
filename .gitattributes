@@ -1,0 +1,22 @@
+# Set default behaviour to normalize line endings to LF on commit
+* text=auto eol=lf
+
+# Force specific file types to NOT normalize and remain binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+
+# Explicitly ensure shell scripts and configs use LF
+*.sh text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.md text eol=lf
+.env.example text eol=lf

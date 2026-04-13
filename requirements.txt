@@ -11,3 +11,5 @@ chromadb==1.5.5
 sentence-transformers==5.3.0
 pypdf==6.9.2
 python-multipart==0.0.20
+google-genai
+python-dotenv

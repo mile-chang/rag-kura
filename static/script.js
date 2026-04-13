@@ -1,8 +1,8 @@
 /**
- * RAG Knowledge Assistant — Frontend Logic
+ * RAG Knowledge Assistant — Frontend Core
  *
- * Manages conversations, messages, file upload, and UI state.
- * All API calls include an X-Client-ID header for per-browser isolation.
+ * Handles API communications, chat lifecycle, Markdown rendering, and UI state management.
+ * Injects `X-Client-ID` in headers to maintain isolated browser sessions natively.
  */
 
 // -- State ------------------------------------------------------------------
@@ -16,14 +16,23 @@ let currentAbortController = null;
 let isStopping = false;
 
 const AVAILABLE_MODELS = [
-    { id: "qwen3.5:2b", name: "Qwen 3.5 2B", supportsThinking: true },
-    { id: "qwen3.5:4b", name: "Qwen 3.5 4B", supportsThinking: true },
-    { id: "llama3.2:3b", name: "Llama 3.2 3B", supportsThinking: false },
-    { id: "phi4-mini", name: "Phi-4 Mini", supportsThinking: true }
+    // -- Ollama local models (require a running Ollama daemon) ---------------
+    { id: "qwen3.5:2b",  name: "Qwen 3.5 2B",  provider: "ollama", supportsThinking: true },
+    { id: "qwen3.5:4b",  name: "Qwen 3.5 4B",  provider: "ollama", supportsThinking: true },
+    { id: "llama3.2:3b", name: "Llama 3.2 3B", provider: "ollama", supportsThinking: false },
+    { id: "phi4-mini",   name: "Phi-4 Mini",   provider: "ollama", supportsThinking: true },
+    // -- Google Gemini cloud models (require GEMINI_API_KEY on the server) --
+    { id: "gemini-3-flash-preview",  name: "Gemini 3 Flash", provider: "gemini", supportsThinking: false },
+    { id: "gemini-3.1-pro-preview",  name: "Gemini 3.1 Pro", provider: "gemini", supportsThinking: true },
 ];
 let selectedModelId = "qwen3.5:2b";
 let isThinkingEnabled = false;
 let isModelDropdownOpen = false;
+
+// Automatically fall back to whichever provider is reachable during startup
+// Optimistically default to True so UI isn't blocked pending /api/status.
+let ollamaAvailable = true;
+let geminiAvailable = true;
 
 // Per-browser identity: stored in localStorage, generated on first visit.
 const clientId = (() => {
@@ -65,7 +74,9 @@ document.addEventListener("DOMContentLoaded", () => {
     $messageInput.addEventListener("input", () => {
         $btnSend.disabled = !$messageInput.value.trim() || isGenerating;
     });
-    renderModelDropdown();
+    // Query provider availability then render the model picker.
+    // checkProviderAvailability() calls renderModelDropdown() internally.
+    checkProviderAvailability();
 });
 
 
@@ -77,14 +88,21 @@ async function loadConversations() {
         const convs = await res.json();
         renderConversationList(convs);
         
-        // Auto-sync header title if active conversation title changed on the server
+        // Sync header title, or reset UI if the active conversation was deleted elsewhere
         if (activeConversationId) {
             const activeConv = convs.find(c => c.id === activeConversationId);
-            if (activeConv && $headerTitle) {
-                $headerTitle.textContent = activeConv.title;
-            }
             const btnEdit = $("btn-edit-title");
-            if (btnEdit) btnEdit.classList.remove("hidden");
+            
+            if (activeConv) {
+                if ($headerTitle) $headerTitle.textContent = activeConv.title;
+                if (btnEdit) btnEdit.classList.remove("hidden");
+            } else {
+                activeConversationId = null;
+                clearChat();
+                if ($headerTitle) $headerTitle.textContent = "RAG Knowledge Assistant";
+                if (btnEdit) btnEdit.classList.add("hidden");
+                showWelcome();
+            }
         } else {
             const btnEdit = $("btn-edit-title");
             if (btnEdit) btnEdit.classList.add("hidden");
@@ -154,7 +172,7 @@ function editConversationTitle() {
     const $input = document.createElement("input");
     $input.type = "text";
     $input.value = currentTitle;
-    $input.maxLength = 100; // Hard restriction to prevent layout breakage
+    $input.maxLength = 100; // Hard cap prevents layout breakage
     $input.className = "bg-white/[0.06] border border-indigo-500/50 rounded px-2 py-0.5 text-sm text-slate-200 outline-none w-48 sm:w-64 font-semibold text-slate-300";
     
     $title.parentNode.replaceChild($input, $title);
@@ -170,7 +188,7 @@ function editConversationTitle() {
         // Strip out excessive lengths and sanitize slightly
         const newTitle = ($input.value.trim() || currentTitle).substring(0, 100);
         
-        // Restore DOM immediately for snappy UX
+        // Swap back to text element instantly for snappy UX
         if ($input.parentNode) {
             $input.parentNode.replaceChild($title, $input);
         }
@@ -232,11 +250,11 @@ async function sendMessage() {
 
     let thinkingId = null;
     
-    // Check if the targeted model is warmed up in VRAM
+    // Ollama lazily loads models into VRAM. Gemini is a cloud architecture and requires no warmup.
     let isWarmingUp = false;
     try {
         const checkRes = await apiFetch(
-            `/models/check_loaded?base_model=${selectedModelId}&use_reasoning=${isThinkingEnabled}`,
+            `/models/${encodeURIComponent(selectedModelId)}/status?use_reasoning=${isThinkingEnabled}`,
             { method: "GET", signal: currentAbortController.signal }
         );
         const data = await checkRes.json();
@@ -267,13 +285,14 @@ async function sendMessage() {
     }
 
     try {
-        // Auto-create conversation if none is active
+        // Lazy initialize a new conversation when sending the first prompt
         if (!activeConversationId) {
             const res = await apiFetch("/conversations", { method: "POST" });
             const conv = await res.json();
             activeConversationId = conv.id;
-            // The title will be auto-updated by the backend on the first message
             $headerTitle.textContent = "New Chat";
+            // Async sync sidebar to avoid blocking message dispatch
+            loadConversations();
         }
 
         const res = await apiFetch(
@@ -627,6 +646,46 @@ function escapeHtml(text) {
     return el.innerHTML;
 }
 
+// -- Provider availability check -------------------------------------------
+
+/**
+ * Fetches the backend's available inference provider statuses (/api/status)
+ * and safely triggers a fallback UI model if the currently selected one is offline.
+ */
+async function checkProviderAvailability() {
+    try {
+        const res = await fetch("/api/status");
+        if (res.ok) {
+            const data = await res.json();
+            ollamaAvailable = data.ollama_available ?? true;
+            geminiAvailable = data.gemini_available ?? true;
+        }
+    } catch (err) {
+        console.warn("Could not reach /api/status:", err);
+    }
+
+    // If the currently selected model's provider is unavailable, fall back
+    // to the first model whose provider is reachable.
+    const current = AVAILABLE_MODELS.find(m => m.id === selectedModelId);
+    if (current && !isModelAvailable(current)) {
+        const fallback = AVAILABLE_MODELS.find(m => isModelAvailable(m));
+        if (fallback) {
+            selectedModelId = fallback.id;
+            if (!fallback.supportsThinking) isThinkingEnabled = false;
+        }
+    }
+
+    renderModelDropdown();
+}
+
+/** Determine whether the model's necessary backend engine is running. */
+function isModelAvailable(model) {
+    if (model.provider === "ollama") return ollamaAvailable;
+    if (model.provider === "gemini") return geminiAvailable;
+    return true;
+}
+
+
 // -- Custom Model Dropdown --------------------------------------------------
 
 function toggleModelDropdown(event) {
@@ -643,13 +702,16 @@ document.addEventListener('click', (e) => {
     }
 });
 
+/**
+ * Handler for selecting a model payload. Enforces availability checks
+ * before engaging.
+ */
 function selectModel(id, event) {
     if (event) event.stopPropagation();
-    selectedModelId = id;
     const model = AVAILABLE_MODELS.find(m => m.id === id);
-    if (!model.supportsThinking) {
-        isThinkingEnabled = false;
-    }
+    if (!model || !isModelAvailable(model)) return; // guard: skip unavailable models
+    selectedModelId = id;
+    if (!model.supportsThinking) isThinkingEnabled = false;
     isModelDropdownOpen = false;
     $("current-model-label").textContent = model.name;
     renderModelDropdown();
@@ -661,44 +723,107 @@ function toggleThinkingMode(event) {
     renderModelDropdown();
 }
 
+/**
+ * Dynamically constructs the Model provider selection contextual menu.
+ * Grey's out providers missing APIs / servers.
+ */
 function renderModelDropdown() {
     const menu = $("model-dropdown-menu");
     if (!menu) return;
-    if (isModelDropdownOpen) {
-        menu.classList.remove("hidden");
-        let html = "";
-        AVAILABLE_MODELS.forEach(m => {
-            const isSelected = m.id === selectedModelId;
-            html += `
-                <button onclick="selectModel('${m.id}', event)" class="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-white/[0.06] transition-colors cursor-pointer ${isSelected ? 'bg-white/[0.04]' : ''}">
-                    <div class="flex items-center gap-2">
-                        <!-- Dummy unified icon for now -->
-                        <svg class="w-4 h-4 ${isSelected ? 'text-indigo-400' : 'text-slate-500'}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-                        </svg>
-                        <span class="${isSelected ? 'text-slate-100 font-medium' : 'text-slate-300'}">${m.name}</span>
-                    </div>
-                    ${isSelected ? '<svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>' : ''}
-                </button>
-            `;
-            if (isSelected && m.supportsThinking) {
-                html += `
-                <div class="flex items-center justify-between px-3 py-2.5 bg-white/[0.02] border-y border-white/[0.06] mb-1" onclick="event.stopPropagation()">
-                    <span class="text-xs text-slate-300 font-medium pl-1">思考中</span>
-                    <label class="relative inline-flex items-center cursor-pointer" onclick="toggleThinkingMode(event)">
-                        <input type="checkbox" class="sr-only peer" ${isThinkingEnabled ? 'checked' : ''} onclick="event.stopPropagation()">
-                        <div class="w-7 h-4 bg-white/[0.1] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:bg-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-transparent after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
-                    </label>
+
+    // Always keep the trigger label in sync with the active selection
+    const currentModel = AVAILABLE_MODELS.find(m => m.id === selectedModelId);
+    if ($("current-model-label") && currentModel) {
+        $("current-model-label").textContent = currentModel.name;
+    }
+
+    if (!isModelDropdownOpen) {
+        menu.classList.add("hidden");
+        return;
+    }
+
+    menu.classList.remove("hidden");
+
+    const ollamaModels = AVAILABLE_MODELS.filter(m => m.provider === "ollama");
+    const geminiModels = AVAILABLE_MODELS.filter(m => m.provider === "gemini");
+
+    /**
+     * Build the HTML for a single model option row.
+     * @param {Object}  m          - Model descriptor from AVAILABLE_MODELS.
+     * @param {boolean} available  - Whether the provider backend is reachable.
+     */
+    const renderOption = (m, available) => {
+        const isSelected  = m.id === selectedModelId;
+        const unavailableLabel = available ? "" : `<span class="text-[10px] text-slate-600 ml-1">unavailable</span>`;
+        const tooltip = available ? "" : `title="${m.provider === 'ollama' ? 'Ollama not available on this server' : 'GEMINI_API_KEY not configured'}"` ;
+
+        // Provider icon: lightning bolt for local, sparkle for cloud
+        const icon = m.provider === "gemini"
+            ? `<svg class="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M12 2a10 10 0 100 20A10 10 0 0012 2zm1 14.5V13h3l-4-7v5H9l4 7z"/></svg>`
+            : `<svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>`;
+
+        const clickHandler = available
+            ? `onclick="selectModel('${m.id}', event)"`
+            : `onclick="event.stopPropagation()"`;
+
+        return `
+            <button ${clickHandler} ${tooltip}
+                    class="w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors
+                           ${available ? 'hover:bg-white/[0.06] cursor-pointer' : 'cursor-not-allowed opacity-40'}
+                           ${isSelected && available ? 'bg-white/[0.04]' : ''}">
+                <div class="flex items-center gap-2">
+                    <span class="${isSelected && available ? 'text-indigo-400' : 'text-slate-500'}">${icon}</span>
+                    <span class="${isSelected && available ? 'text-slate-100 font-medium' : 'text-slate-300'}">${m.name}</span>
+                    ${unavailableLabel}
                 </div>
-                `;
+                ${isSelected && available ? '<svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"/></svg>' : ''}
+            </button>
+        `;
+    };
+
+    /** Inline thinking-mode toggle shown below the currently selected model. */
+    const renderThinkingToggle = () => `
+        <div class="flex items-center justify-between px-3 py-2.5 bg-white/[0.02] border-y border-white/[0.06] mb-1" onclick="event.stopPropagation()">
+            <span class="text-xs text-slate-300 font-medium pl-1">思考中</span>
+            <label class="relative inline-flex items-center cursor-pointer" onclick="toggleThinkingMode(event)">
+                <input type="checkbox" class="sr-only peer" ${isThinkingEnabled ? 'checked' : ''} onclick="event.stopPropagation()">
+                <div class="w-7 h-4 bg-white/[0.1] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-3 peer-checked:after:bg-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-slate-300 after:border-transparent after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-emerald-500"></div>
+            </label>
+        </div>
+    `;
+
+    let html = "";
+
+    // -- Cloud section (Gemini) ----------------------------------------------
+    if (geminiModels.length > 0) {
+        html += `
+            <div class="px-3 py-1.5 text-[10px] text-slate-500 uppercase tracking-widest font-semibold flex items-center gap-1.5">
+                <svg class="w-3 h-3" viewBox="0 0 24 24" fill="currentColor"><path d="M6.5 2h11l3 5-10 15L.5 7zm1.7 2l-5 7.5h13.6l-5-7.5z"/></svg>
+                Cloud
+            </div>`;
+        geminiModels.forEach(m => {
+            html += renderOption(m, geminiAvailable);
+            if (m.id === selectedModelId && m.supportsThinking && geminiAvailable) {
+                html += renderThinkingToggle();
             }
         });
-        menu.innerHTML = html;
-        const currentModel = AVAILABLE_MODELS.find(m => m.id === selectedModelId);
-        if ($("current-model-label")) {
-            $("current-model-label").textContent = currentModel.name;
-        }
-    } else {
-        menu.classList.add("hidden");
     }
+
+    // -- Local section (Ollama) ----------------------------------------------
+    if (ollamaModels.length > 0) {
+        const borderClass = geminiModels.length > 0 ? "border-t border-white/[0.06] mt-1 pt-1" : "";
+        html += `
+            <div class="px-3 py-1.5 text-[10px] text-slate-500 uppercase tracking-widest font-semibold flex items-center gap-1.5 ${borderClass}">
+                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+                Local
+            </div>`;
+        ollamaModels.forEach(m => {
+            html += renderOption(m, ollamaAvailable);
+            if (m.id === selectedModelId && m.supportsThinking && ollamaAvailable) {
+                html += renderThinkingToggle();
+            }
+        });
+    }
+
+    menu.innerHTML = html;
 }

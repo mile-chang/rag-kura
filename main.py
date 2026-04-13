@@ -1,22 +1,80 @@
-"""RAG Knowledge Assistant — FastAPI Backend (v2).
+"""RAG Knowledge Assistant — FastAPI Backend (v3).
 
-RESTful API for conversation management, multi-model inference with
-dynamic routing, optional RAG retrieval, and tool use.  Serves the
-static frontend from the static/ directory on the same port.
+RESTful API for conversation management, multi-provider inference
+(Ollama for local models, Google Gemini for cloud models), optional
+RAG retrieval, and tool use.  Serves the static frontend from the
+static/ directory on the same port.
 
-All conversation endpoints require an X-Client-ID header for per-browser
-isolation.  The frontend generates this UUID on first visit and stores it
-in localStorage.
+Provider availability
+---------------------
+* Ollama  — available when the ``ollama`` Python package is installed
+            and the local Ollama daemon is running.
+* Gemini  — available when the ``GEMINI_API_KEY`` environment variable
+            is present and the ``google-genai`` package is installed.
+
+All conversation endpoints require an ``X-Client-ID`` header for
+per-browser session isolation.  The frontend generates this UUID on
+first visit and persists it in localStorage.
 """
 
 import asyncio
+import os
 import subprocess
 import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import ollama
+# ---------------------------------------------------------------------------
+# Optional: load .env file into os.environ (falls back gracefully if absent)
+# ---------------------------------------------------------------------------
+# python-dotenv is listed in requirements.txt but we guard against import
+# failure so the server works even without it.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass  # .env loading is a convenience; not a hard requirement
+
+# ---------------------------------------------------------------------------
+# Optional dependency: Ollama (local model inference)
+# ---------------------------------------------------------------------------
+# ``try/except ImportError`` is the canonical Python idiom for optional
+# dependencies — the same pattern used by pandas, boto3, requests, etc.
+# If the package is missing the server starts normally; Ollama models are
+# simply reported as unavailable to the frontend.
+try:
+    import ollama as _ollama_lib  # noqa: F401
+
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    _ollama_lib = None  # type: ignore[assignment]
+    OLLAMA_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
+# Optional dependency: Google Gemini API
+# ---------------------------------------------------------------------------
+# Requires GEMINI_API_KEY to be set in the environment (via .env or the
+# system).  If the key is absent or the package is not installed, Gemini
+# models are silently disabled — no crash, no noisy warning.
+try:
+    from google import genai as _genai
+    from google.genai import types as _genai_types
+
+    _GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+    if _GEMINI_API_KEY:
+        _gemini_client = _genai.Client(api_key=_GEMINI_API_KEY)
+        GEMINI_AVAILABLE = True
+    else:
+        _gemini_client = None
+        GEMINI_AVAILABLE = False
+except ImportError:
+    _genai = None  # type: ignore[assignment]
+    _genai_types = None  # type: ignore[assignment]
+    _gemini_client = None
+    GEMINI_AVAILABLE = False
+
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -35,20 +93,27 @@ from database import (
 from prompts import build_system_prompt
 from tools import TOOL_FUNCTIONS, TOOL_MAP
 
-# -- App setup ---------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# App bootstrapping
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title="RAG Knowledge Assistant API",
-    description="Multi-model RAG backend with RESTful conversation management.",
-    version="2.0.0",
+    description=(
+        "Multi-provider RAG backend (Ollama + Google Gemini) "
+        "with RESTful conversation management."
+    ),
+    version="3.0.0",
 )
 
 init_db()
 
-# How long Ollama keeps the model in GPU memory after the last request.
+# How long Ollama keeps the model warm in GPU memory after the last request.
 OLLAMA_KEEP_ALIVE = "30m"
 
-# -- RAG vector store (loaded once at startup) --------------------------------
+# ---------------------------------------------------------------------------
+# RAG vector store — loaded once at startup to amortise initialisation cost
+# ---------------------------------------------------------------------------
 
 _CHROMA_DIR = Path(__file__).parent / "chroma_db"
 _DOCS_DIR = Path(__file__).parent / "docs"
@@ -66,39 +131,74 @@ _vectorstore = Chroma(
     collection_name="rag_knowledge",
 )
 
-RAG_TOP_K = 2
+RAG_TOP_K = 2  # Number of document chunks to retrieve per query
 
-# -- Model registry ----------------------------------------------------------
-# Central source of truth for model capabilities and reasoning strategies.
+# ---------------------------------------------------------------------------
+# Model registry
+# ---------------------------------------------------------------------------
+# Central source of truth for model capabilities and inference routing.
+# The ``provider`` field controls which backend handles the request.
+#
+# reasoning_strategy values
+# -------------------------
+# "none"         — model has no built-in reasoning / thinking mode
+# "parameter"    — enable/disable thinking via the `think` param (Ollama)
+# "model_switch" — swap to an alternate model variant when reasoning is on
+# "thinking"     — pass thinking_config to the Gemini API
 
 MODEL_REGISTRY: dict[str, dict] = {
+    # -- Ollama local models --------------------------------------------------
     "qwen3.5:2b": {
+        "provider": "ollama",
         "vision": True,
         "tools": True,
         "reasoning_strategy": "parameter",
     },
     "qwen3.5:4b": {
+        "provider": "ollama",
         "vision": True,
         "tools": True,
         "reasoning_strategy": "parameter",
     },
     "llama3.2:3b": {
+        "provider": "ollama",
         "vision": False,
         "tools": True,
         "reasoning_strategy": "none",
     },
     "phi4-mini": {
+        "provider": "ollama",
         "vision": False,
         "tools": True,
         "reasoning_strategy": "model_switch",
         "switch_to": "phi4-mini-reasoning",
     },
+    # -- Google Gemini cloud models ------------------------------------------
+    # Model IDs confirmed against official Gemini API docs (2026-03-31).
+    "gemini-3-flash-preview": {
+        "provider": "gemini",
+        "vision": True,
+        "tools": True,
+        "reasoning_strategy": "none",
+        "display_name": "Gemini 3 Flash",
+    },
+    "gemini-3.1-pro-preview": {
+        "provider": "gemini",
+        "vision": True,
+        "tools": True,
+        "reasoning_strategy": "thinking",  # supports thinking_config
+        "display_name": "Gemini 3.1 Pro",
+    },
 }
 
-# -- Pydantic schemas --------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
+
 
 class MessageRequest(BaseModel):
     """Payload for sending a message within a conversation."""
+
     message: str
     base_model: str = "qwen3.5:2b"
     use_reasoning: bool = False
@@ -108,7 +208,8 @@ class MessageRequest(BaseModel):
 
 
 class MessageResponse(BaseModel):
-    """AI response returned after inference."""
+    """AI response returned to the frontend after inference."""
+
     role: str = "assistant"
     content: str
     model: str
@@ -118,7 +219,8 @@ class MessageResponse(BaseModel):
 
 
 class ConversationSummary(BaseModel):
-    """Lightweight view used in conversation lists."""
+    """Lightweight conversation descriptor used in list responses."""
+
     id: str
     title: str
     created_at: str
@@ -126,7 +228,8 @@ class ConversationSummary(BaseModel):
 
 
 class ConversationDetail(BaseModel):
-    """Full conversation including message history."""
+    """Full conversation including all persisted messages."""
+
     id: str
     title: str
     created_at: str
@@ -135,22 +238,339 @@ class ConversationDetail(BaseModel):
 
 
 class TitleUpdate(BaseModel):
-    """Payload for updating a conversation title."""
+    """Payload for renaming a conversation."""
+
     title: str
 
 
-# -- Client ID helper --------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
 
 def _require_client_id(x_client_id: str | None) -> str:
-    """Validate and return the X-Client-ID header, or raise 400."""
+    """Return a validated X-Client-ID header value, or raise HTTP 400."""
     if not x_client_id or not x_client_id.strip():
         raise HTTPException(status_code=400, detail="Missing X-Client-ID header.")
     return x_client_id.strip()
 
 
-# -- Inference engine (synchronous, runs in a thread) ------------------------
+def _build_rag_message(user_message: str) -> str:
+    """Augment the user query with top-K chunks from ChromaDB.
 
-_MAX_TOOL_ROUNDS = 5
+    Returns the original message unchanged when no relevant chunks are found,
+    so the RAG path degrades gracefully to a plain inference call.
+    """
+    chunks = _vectorstore.similarity_search(user_message, k=RAG_TOP_K)
+    if not chunks:
+        return user_message
+    context = "\n---\n".join(c.page_content for c in chunks)
+    return (
+        f"Please refer to the following knowledge base excerpts:\n"
+        f"{context}\n\n"
+        f"Based on the above, answer the question: {user_message}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Inference engine — Ollama (local)
+# ---------------------------------------------------------------------------
+
+_MAX_TOOL_ROUNDS = 5  # Maximum tool-use iterations before forcing a final answer
+
+
+def _run_inference_ollama(
+    user_message: str,
+    base_model: str,
+    model_config: dict,
+    use_reasoning: bool,
+    use_rag: bool,
+    use_tools: bool,
+    has_image: bool = False,
+) -> dict:
+    """Handles inference using the local Ollama daemon.
+
+    Resolves the reasoning mode, injects RAG contexts optimally,
+    and runs an automated loop to handle function calling (tool use).
+
+    Returns:
+        dict: Contains response, model name, elapsed_seconds, and tools_used.
+    """
+    if not OLLAMA_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Ollama is not installed on this server.",
+        )
+
+    # Reject image input for vision-incapable models early
+    if has_image and not model_config["vision"]:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Model '{base_model}' does not support image input. "
+                "Use a vision-capable model such as qwen3.5:4b."
+            ),
+        )
+
+    # Resolve the final model name and thinking flag based on the user's reasoning strategy
+    actual_model = base_model
+    strategy = model_config["reasoning_strategy"]
+    enable_think: bool | None = None
+
+    if strategy == "model_switch" and use_reasoning:
+        # Swap to a dedicated reasoning variant (e.g. phi4-mini-reasoning)
+        actual_model = model_config.get("switch_to", base_model)
+    elif strategy == "parameter":
+        # Toggle thinking via the boolean parameter
+        enable_think = use_reasoning
+
+    # Temporarily disable tools if the selected model variant doesn't support them
+    tools_enabled = use_tools and model_config.get("tools", False)
+    if strategy == "model_switch" and use_reasoning and "reasoning" in actual_model:
+        tools_enabled = False
+
+    active_tools = TOOL_FUNCTIONS if tools_enabled else None
+
+    # Load initial system prompt and chat history
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    messages: list[dict] = [
+        {"role": "system", "content": build_system_prompt(today=today)},
+    ]
+
+    # Optionally augment the user's message with retrieved knowledge-base context
+    augmented = _build_rag_message(user_message) if use_rag else user_message
+    messages.append({"role": "user", "content": augmented})
+
+    tools_used: list[str] = []
+    try:
+        start = time.perf_counter()
+
+        # Initial model request
+        result = _ollama_lib.chat(
+            model=actual_model,
+            messages=messages,
+            tools=active_tools,
+            think=enable_think,
+            keep_alive=OLLAMA_KEEP_ALIVE,
+            options={"num_ctx": 4096},
+        )
+
+        # Function calling loop (max iterations to prevent infinite loops)
+        for _ in range(_MAX_TOOL_ROUNDS):
+            tool_calls = result["message"].get("tool_calls")
+            
+            # If the model didn't call any tools, the final answer is ready
+            if not tool_calls:
+                break
+
+            # Append the model's tool call request to the chat history
+            messages.append(result["message"])
+
+            # Execute the requested tools
+            for tc in tool_calls:
+                name = tc["function"].get("name", "")
+                safe_args = tc["function"].get("arguments") or {}
+                handler = TOOL_MAP.get(name)
+
+                if handler is None:
+                    output = f"Error: unknown tool '{name}'"
+                else:
+                    try:
+                        output = handler(**safe_args)
+                    except Exception as exc:
+                        output = f"Error executing {name}: {exc}"
+
+                tools_used.append(name)
+                # Append the tool execution results back to the chat history
+                messages.append({"role": "tool", "content": str(output)})
+
+            # Send the updated history back to the model or for final answer
+            result = _ollama_lib.chat(
+                model=actual_model,
+                messages=messages,
+                tools=active_tools,
+                think=enable_think,
+                keep_alive=OLLAMA_KEEP_ALIVE,
+                options={"num_ctx": 4096},
+            )
+
+        elapsed = round(time.perf_counter() - start, 2)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ollama error: {exc}") from exc
+
+    # Append a helpful suffix to the model name if thinking mode was active
+    display_model = actual_model
+    if use_reasoning and strategy == "parameter":
+        display_model = f"{actual_model} (Think)"
+
+    return {
+        "response": result["message"].get("content", ""),
+        "model": display_model,
+        "elapsed_seconds": elapsed,
+        "tools_used": tools_used,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Inference engine — Google Gemini (cloud)
+# ---------------------------------------------------------------------------
+
+
+def _run_inference_gemini(
+    user_message: str,
+    base_model: str,
+    model_config: dict,
+    use_reasoning: bool,
+    use_rag: bool,
+    use_tools: bool,
+) -> dict:
+    """Handles inference using the Google Gemini cloud API.
+
+    Runs an automated loop to handle function calling (tool use) if needed.
+    Unlike Ollama, Gemini requires the system prompt to be passed separately
+    via the content config, not as a standard chat message.
+
+    Returns:
+        dict: Contains response, model name, elapsed_seconds, and tools_used.
+    """
+    if not GEMINI_AVAILABLE or _gemini_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Gemini is unavailable. Please set GEMINI_API_KEY as an environment variable.",
+        )
+
+    strategy = model_config["reasoning_strategy"]
+    tools_enabled = use_tools and model_config.get("tools", False)
+
+    # Prepare system prompt and optional RAG context
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    system_prompt = build_system_prompt(today=today)
+    augmented = _build_rag_message(user_message) if use_rag else user_message
+
+    # Chat history starts with the user's message.
+    # Note: System prompt is excluded here; it's passed via config instead.
+    contents: list = [
+        _genai_types.Content(
+            role="user",
+            parts=[_genai_types.Part(text=augmented)],
+        )
+    ]
+
+    # Enable advanced thinking mode for supported models
+    # setting thinking_budget=-1 allows the model to dynamically decide 
+    # the amount of time spent reasoning.
+    thinking_cfg = None
+    if use_reasoning and strategy == "thinking":
+        thinking_cfg = _genai_types.ThinkingConfig(thinking_budget=-1)
+
+    # Initialize tool settings
+    # The modern google-genai SDK natively accepts Python callables.
+    active_tools = TOOL_FUNCTIONS if tools_enabled else None
+
+    config = _genai_types.GenerateContentConfig(
+        system_instruction=system_prompt,
+        tools=active_tools,
+        thinking_config=thinking_cfg,
+    )
+
+    tools_used: list[str] = []
+    try:
+        start = time.perf_counter()
+
+        # Initial model request
+        response = _gemini_client.models.generate_content(
+            model=base_model,
+            contents=contents,
+            config=config,
+        )
+
+        # Function calling loop (max iterations to prevent infinite loops)
+        for _ in range(_MAX_TOOL_ROUNDS):
+            if not response.candidates:
+                break
+
+            # Filter parts to find any function calls
+            candidate_parts = response.candidates[0].content.parts
+            fn_call_parts = [
+                p for p in candidate_parts if p.function_call is not None
+            ]
+
+            # If the model didn't call any tools, the final answer is ready
+            if not fn_call_parts:
+                break
+
+            # Append the model's tool call request to the chat history
+            contents.append(response.candidates[0].content)
+
+            # Execute the requested tools
+            tool_result_parts: list = []
+            for part in fn_call_parts:
+                fc = part.function_call
+                handler = TOOL_MAP.get(fc.name)
+
+                if handler is None:
+                    result_text = f"Error: unknown tool '{fc.name}'"
+                else:
+                    try:
+                        # Ensure we safely unpack args, handling None cases
+                        safe_args = fc.args or {}
+                        result_text = str(handler(**safe_args))
+                    except Exception as exc:
+                        result_text = f"Error executing {fc.name}: {exc}"
+
+                tools_used.append(fc.name)
+                tool_result_parts.append(
+                    _genai_types.Part(
+                        function_response=_genai_types.FunctionResponse(
+                            name=fc.name,
+                            response={"output": result_text},
+                        )
+                    )
+                )
+
+            # Append the tool execution results back to the chat history
+            # Gemini expects tool responses to be marked under the "user" role
+            contents.append(
+                _genai_types.Content(role="user", parts=tool_result_parts)
+            )
+
+            # Send the updated history back to the model or for final answer
+            response = _gemini_client.models.generate_content(
+                model=base_model,
+                contents=contents,
+                config=config,
+            )
+
+        elapsed = round(time.perf_counter() - start, 2)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Gemini error: {exc}") from exc
+
+    # response.text conveniently filters out thoughts, code execution,
+    # and function call parts to return only standard text.
+    final_text = response.text or ""
+
+    # Append a helpful suffix to the model name if thinking mode was active
+    display_model = model_config.get("display_name", base_model)
+    if use_reasoning and strategy == "thinking":
+        display_model = f"{display_model} (Think)"
+
+    return {
+        "response": final_text,
+        "model": display_model,
+        "elapsed_seconds": elapsed,
+        "tools_used": tools_used,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Inference dispatcher
+# ---------------------------------------------------------------------------
 
 
 def _run_inference(
@@ -161,158 +581,77 @@ def _run_inference(
     use_tools: bool,
     has_image: bool = False,
 ) -> dict:
-    """Execute the full inference pipeline (blocking).
+    """Route an inference request to the correct provider backend.
 
-    This function is intentionally synchronous because ollama.chat() is
-    blocking.  It should be called via asyncio.to_thread() to avoid
-    stalling the FastAPI event loop.
+    This function is intentionally synchronous because both ollama.chat()
+    and the Gemini SDK's generate_content() are blocking calls.  Always
+    invoke via ``asyncio.to_thread()`` to keep the FastAPI event loop free.
 
-    Returns dict with keys: response, model, elapsed_seconds, tools_used.
+    Raises:
+        HTTPException(400) when the requested model is not registered.
     """
-    # Validate model
     model_config = MODEL_REGISTRY.get(base_model)
     if model_config is None:
         raise HTTPException(
             status_code=400,
-            detail=f"Model '{base_model}' not registered. Available: {list(MODEL_REGISTRY.keys())}",
-        )
-
-    # Vision capability guard
-    if has_image and not model_config["vision"]:
-        raise HTTPException(
-            status_code=400,
             detail=(
-                f"Model '{base_model}' does not support image input. "
-                f"Use a vision-capable model such as qwen3.5:4b."
+                f"Model '{base_model}' is not registered. "
+                f"Available: {list(MODEL_REGISTRY.keys())}"
             ),
         )
 
-    # Resolve actual model name based on reasoning strategy
-    actual_model = base_model
-    strategy = model_config["reasoning_strategy"]
-    enable_think: bool | None = None
+    provider = model_config.get("provider", "ollama")
 
-    if strategy == "model_switch" and use_reasoning:
-        actual_model = model_config.get("switch_to", base_model)
-    elif strategy == "parameter":
-        enable_think = use_reasoning
-
-    # Resolve tool definitions
-    tools_enabled = use_tools and model_config.get("tools", False)
-    
-    # Force disable tools if the actual switched model doesn't support them
-    # For example, phi4-mini-reasoning lacks tool support currently
-    if strategy == "model_switch" and use_reasoning and "reasoning" in actual_model:
-        tools_enabled = False
-
-    active_tools = TOOL_FUNCTIONS if tools_enabled else None
-
-    # Build message list with system prompt
-    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-    messages: list[dict] = [
-        {"role": "system", "content": build_system_prompt(today=today)},
-    ]
-
-    # Conditionally inject RAG context
-    if use_rag:
-        chunks = _vectorstore.similarity_search(user_message, k=RAG_TOP_K)
-        if chunks:
-            context = "\n---\n".join(c.page_content for c in chunks)
-            augmented = (
-                f"Please refer to the following knowledge base excerpts:\n"
-                f"{context}\n\n"
-                f"Based on the above, answer the question: {user_message}"
-            )
-        else:
-            augmented = user_message
-    else:
-        augmented = user_message
-
-    messages.append({"role": "user", "content": augmented})
-
-    # Call Ollama with iterative tool-use loop
-    tools_used: list[str] = []
-    try:
-        start = time.perf_counter()
-        result = ollama.chat(
-            model=actual_model,
-            messages=messages,
-            tools=active_tools,
-            think=enable_think,
-            keep_alive=OLLAMA_KEEP_ALIVE,
-            options={"num_ctx": 4096},
+    if provider == "gemini":
+        return _run_inference_gemini(
+            user_message=user_message,
+            base_model=base_model,
+            model_config=model_config,
+            use_reasoning=use_reasoning,
+            use_rag=use_rag,
+            use_tools=use_tools,
         )
-
-        for _ in range(_MAX_TOOL_ROUNDS):
-            tool_calls = result["message"].get("tool_calls")
-            if not tool_calls:
-                break
-
-            messages.append(result["message"])
-            for tc in tool_calls:
-                name = tc["function"]["name"]
-                args = tc["function"]["arguments"]
-                handler = TOOL_MAP.get(name)
-
-                if handler is None:
-                    output = f"Error: unknown tool '{name}'"
-                else:
-                    try:
-                        output = handler(**args)
-                    except Exception as e:
-                        output = f"Error executing {name}: {e}"
-
-                tools_used.append(name)
-                messages.append({"role": "tool", "content": str(output)})
-
-            result = ollama.chat(
-                model=actual_model,
-                messages=messages,
-                tools=active_tools,
-                think=enable_think,
-                keep_alive=OLLAMA_KEEP_ALIVE,
-                options={"num_ctx": 4096},
-            )
-
-        elapsed = round(time.perf_counter() - start, 2)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ollama error: {e}")
-
-    # Format the display name to clearly indicate thinking mode for parameter-based models
-    display_model = actual_model
-    if use_reasoning and strategy == "parameter":
-        display_model = f"{actual_model} (Think)"
-
-    return {
-        "response": result["message"]["content"],
-        "model": display_model,
-        "elapsed_seconds": elapsed,
-        "tools_used": tools_used,
-    }
+    else:
+        # Default to Ollama for all non-Gemini providers
+        return _run_inference_ollama(
+            user_message=user_message,
+            base_model=base_model,
+            model_config=model_config,
+            use_reasoning=use_reasoning,
+            use_rag=use_rag,
+            use_tools=use_tools,
+            has_image=has_image,
+        )
 
 
 # ============================================================================
 # RESTful API endpoints
 # ============================================================================
 
-# -- Conversations -----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Conversations — CRUD
+# ---------------------------------------------------------------------------
+
 
 @app.get("/api/conversations", response_model=list[ConversationSummary])
 async def api_list_conversations(x_client_id: str = Header(None)):
-    """List all conversations for the requesting client."""
+    """List all conversations owned by the requesting client."""
     cid = _require_client_id(x_client_id)
     return list_conversations(cid)
 
 
 @app.post("/api/conversations", response_model=ConversationSummary, status_code=201)
 async def api_create_conversation(x_client_id: str = Header(None)):
-    """Create a new empty conversation."""
+    """Create a new empty conversation and return its descriptor."""
     cid = _require_client_id(x_client_id)
     return create_conversation(cid)
 
 
 @app.get("/api/conversations/{conversation_id}", response_model=ConversationDetail)
-async def api_get_conversation(conversation_id: str, x_client_id: str = Header(None)):
+async def api_get_conversation(
+    conversation_id: str,
+    x_client_id: str = Header(None),
+):
     """Retrieve a conversation with its full message history."""
     cid = _require_client_id(x_client_id)
     conv = get_conversation(conversation_id, cid)
@@ -322,8 +661,11 @@ async def api_get_conversation(conversation_id: str, x_client_id: str = Header(N
 
 
 @app.delete("/api/conversations/{conversation_id}", status_code=204)
-async def api_delete_conversation(conversation_id: str, x_client_id: str = Header(None)):
-    """Delete a conversation and all its messages."""
+async def api_delete_conversation(
+    conversation_id: str,
+    x_client_id: str = Header(None),
+):
+    """Permanently delete a conversation and all of its messages."""
     cid = _require_client_id(x_client_id)
     if not delete_conversation(conversation_id, cid):
         raise HTTPException(status_code=404, detail="Conversation not found.")
@@ -331,19 +673,26 @@ async def api_delete_conversation(conversation_id: str, x_client_id: str = Heade
 
 
 @app.patch("/api/conversations/{conversation_id}/title")
-async def api_update_title(conversation_id: str, payload: TitleUpdate, x_client_id: str = Header(None)):
-    """Update the title of an existing conversation."""
+async def api_update_title(
+    conversation_id: str,
+    payload: TitleUpdate,
+    x_client_id: str = Header(None),
+):
+    """Rename a conversation (max 100 characters, trimmed at the backend)."""
     cid = _require_client_id(x_client_id)
     conv = get_conversation(conversation_id, cid)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    
+
     clean_title = payload.title.strip()[:100]
     update_conversation_title(conversation_id, clean_title)
     return {"status": "success", "title": clean_title}
 
 
-# -- Messages (inference) ----------------------------------------------------
+# ---------------------------------------------------------------------------
+# Messages — inference
+# ---------------------------------------------------------------------------
+
 
 @app.post(
     "/api/conversations/{conversation_id}/messages",
@@ -355,25 +704,31 @@ async def api_send_message(
     request: Request,
     x_client_id: str = Header(None),
 ):
-    """Send a user message, run inference, persist both turns, and respond.
+    """Send a user message, run provider-agnostic inference, and persist both turns.
 
-    The conversation title is auto-generated from the first user message.
-    Inference runs in a separate thread to avoid blocking the event loop.
+    Behaviour notes
+    ---------------
+    * The conversation title is auto-generated from the first user message.
+    * Inference runs in a worker thread so the FastAPI event loop stays free.
+    * Client disconnection is polled every 0.5 s; on disconnect the endpoint
+      returns HTTP 499 (Client Closed Request) without writing to the DB.
+      The background thread finishes naturally and its result is discarded.
     """
     cid = _require_client_id(x_client_id)
     conv = get_conversation(conversation_id, cid)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
-    # Persist user message
+    # Persist the user turn immediately so it appears in the history even
+    # if the following inference step fails.
     add_message(conversation_id, "user", payload.message)
 
-    # Auto-title on first message
+    # Auto-generate a title from the first message in the conversation
     if conv["title"] == "New Chat":
         title = payload.message[:30] + ("..." if len(payload.message) > 30 else "")
         update_conversation_title(conversation_id, title)
 
-    # Run inference in a thread so we don't block the event loop
+    # Dispatch inference to the appropriate provider backend in a thread
     inference_task = asyncio.create_task(
         asyncio.to_thread(
             _run_inference,
@@ -386,19 +741,19 @@ async def api_send_message(
         )
     )
 
-    # Poll client connection status while inference completes in the background
+    # Poll for client disconnect while inference runs in the background
     while not inference_task.done():
         if await request.is_disconnected():
-            # If client disconnects, we cancel the endpoint cleanly without interacting with SQLite.
-            # The background thread running Ollama will just finish normally and discard its result.
-            return Response(status_code=499) # 499 indicates Client Closed Request
+            return Response(status_code=499)  # 499 = Client Closed Request
         await asyncio.sleep(0.5)
 
     result = inference_task.result()
 
-    # Persist assistant response
+    # Persist the assistant turn
     add_message(
-        conversation_id, "assistant", result["response"],
+        conversation_id,
+        "assistant",
+        result["response"],
         model=result["model"],
         elapsed_seconds=result["elapsed_seconds"],
         tools_used=result["tools_used"],
@@ -414,21 +769,26 @@ async def api_send_message(
     )
 
 
-# -- File upload (knowledge base) -------------------------------------------
+# ---------------------------------------------------------------------------
+# Knowledge base — file upload and ingestion
+# ---------------------------------------------------------------------------
+
 
 @app.post("/api/upload")
 async def api_upload_files(files: list[UploadFile] = File(...)):
-    """Upload .md/.pdf files to the knowledge base and trigger ingestion.
+    """Upload .md or .pdf files to the knowledge base and trigger re-ingestion.
 
-    Files are sanitised and saved to docs/, then ingest.py rebuilds the
-    ChromaDB vector store.
+    Files are sanitised (directory components stripped to prevent path
+    traversal) then saved to docs/.  The ingest.py script rebuilds the
+    ChromaDB vector store; the in-memory reference is hot-reloaded so
+    subsequent queries immediately reflect the new documents.
     """
     allowed = {".md", ".pdf"}
     _DOCS_DIR.mkdir(parents=True, exist_ok=True)
 
-    saved = []
+    saved: list[str] = []
     for f in files:
-        # Sanitise: strip directory components to prevent path traversal
+        # Strip directory separators to neutralise path-traversal payloads
         safe_name = Path(f.filename).name
         ext = Path(safe_name).suffix.lower()
         if ext not in allowed:
@@ -441,7 +801,7 @@ async def api_upload_files(files: list[UploadFile] = File(...)):
         dest.write_bytes(content)
         saved.append(safe_name)
 
-    # Run ingestion using the same Python interpreter as the current process
+    # Re-run ingestion in the same Python environment as the server process
     proc = subprocess.run(
         [sys.executable, "ingest.py"],
         capture_output=True,
@@ -455,7 +815,7 @@ async def api_upload_files(files: list[UploadFile] = File(...)):
             detail=f"Ingestion failed: {proc.stderr}",
         )
 
-    # Reload vector store so new documents are available immediately
+    # Hot-reload the vector store so new documents are queryable immediately
     global _vectorstore
     _vectorstore = Chroma(
         persist_directory=str(_CHROMA_DIR),
@@ -466,38 +826,81 @@ async def api_upload_files(files: list[UploadFile] = File(...)):
     return {"files": saved, "message": f"{len(saved)} file(s) ingested successfully."}
 
 
-# -- Health & Model Status ----------------------------------------------------
+# ---------------------------------------------------------------------------
+# Model status  (GET /api/models/{model_id}/status)
+# ---------------------------------------------------------------------------
 
-@app.get("/api/models/check_loaded")
-async def api_check_loaded(base_model: str, use_reasoning: bool = False):
-    """Check if the requested model (or its reasoning variant) is loaded in VRAM."""
-    model_config = MODEL_REGISTRY.get(base_model)
+
+@app.get("/api/models/{model_id}/status")
+async def api_model_status(model_id: str, use_reasoning: bool = False):
+    """Return the warm/cold state of the specified model.
+
+    * **Ollama models** — queries ``ollama.ps()`` to check whether the
+      model is currently resident in VRAM.  Returns ``is_loaded=false``
+      when Ollama is not installed so the UI shows the loading indicator.
+    * **Gemini models** — always returns ``is_loaded=true`` because cloud
+      APIs have no local warm-up phase.
+
+    The ``model_id`` path segment must be URL-encoded when it contains
+    special characters such as colons or dots (e.g. ``qwen3.5%3A2b``).
+    FastAPI automatically decodes the value before matching.
+    """
+    model_config = MODEL_REGISTRY.get(model_id)
+
+    # Unknown model — respond optimistically so the UI isn't blocked
     if not model_config:
-        return {"is_loaded": True, "actual_model": base_model}
-        
-    actual_model = base_model
+        return {"is_loaded": True, "actual_model": model_id}
+
+    provider = model_config.get("provider", "ollama")
+
+    # Cloud models need no local warm-up
+    if provider == "gemini":
+        return {"is_loaded": True, "actual_model": model_id}
+
+    # Resolve the actual model variant (handles phi4-mini → phi4-mini-reasoning)
+    actual_model = model_id
     strategy = model_config.get("reasoning_strategy")
     if strategy == "model_switch" and use_reasoning:
-        actual_model = model_config.get("switch_to", base_model)
-        
+        actual_model = model_config.get("switch_to", model_id)
+
+    if not OLLAMA_AVAILABLE:
+        # Ollama not installed — report as not loaded so the UI shows a hint
+        return {"is_loaded": False, "actual_model": actual_model}
+
     try:
-        ps_data = ollama.ps()
-        # ollama.ps() returns list of dicts like: {"name": "llama3.2:3b", "model": "llama3.2:3b", ...}
+        ps_data = _ollama_lib.ps()
         running_models = [m.get("model", "") for m in ps_data.get("models", [])]
         is_loaded = any(actual_model in m for m in running_models)
     except Exception:
-        is_loaded = True  # Silently fallback to true if Ollama is unreachable via ps
-        
+        # Ollama daemon unreachable — fall back to True so the UI doesn't stall
+        is_loaded = True
+
     return {"is_loaded": is_loaded, "actual_model": actual_model}
 
 
-@app.get("/api/health")
-async def health_check():
-    """Liveness probe returning service status and registered models."""
-    return {"status": "ok", "registered_models": list(MODEL_REGISTRY.keys())}
+# ---------------------------------------------------------------------------
+# Service status  (GET /api/status)
+# ---------------------------------------------------------------------------
 
 
-# -- Static file serving (must be mounted AFTER API routes) ------------------
+@app.get("/api/status")
+async def api_status():
+    """Return service health and per-provider availability.
+
+    The frontend calls this endpoint on startup to determine which models
+    to enable in the model-picker UI.  No credentials are exposed.
+    """
+    return {
+        "status": "ok",
+        "ollama_available": OLLAMA_AVAILABLE,
+        "gemini_available": GEMINI_AVAILABLE,
+        "registered_models": list(MODEL_REGISTRY.keys()),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Static file serving — MUST be mounted after all /api routes
+# ---------------------------------------------------------------------------
 
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
