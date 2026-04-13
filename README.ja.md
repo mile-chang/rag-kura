@@ -9,11 +9,12 @@
 
 </div>
 
-> Ollama を活用した、動的モデルルーティング・機能ガード・マルチモデル対応のローカルファースト RAG ナレッジアシスタント。
+> Google Gemini および Ollama 連携による、動的モデルルーティング・機能ガード・マルチプロバイダ対応のハイブリッド RAG ナレッジアシスタント。
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Ollama](https://img.shields.io/badge/Ollama-local_LLM-black.svg)](https://ollama.com/)
+[![Gemini](https://img.shields.io/badge/Gemini-Cloud_API-1A73E8.svg)](https://aistudio.google.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [English](README.md) | [繁體中文](README.zh-TW.md)
@@ -22,7 +23,7 @@
 
 ## 概要
 
-RAG-Kura は、FastAPI と Ollama で構築されたローカルファーストのナレッジアシスタントバックエンドです。**モデルレジストリ（Model Registry）** によるインテリジェントなリクエストルーティングを実現し、適切なモデルバリアントの自動選択、パラメータ注入、非対応機能の自動ブロックを手動操作なしで行います。
+RAG-Kura は、FastAPI、Ollama、および Google Gemini で構築されたナレッジアシスタントバックエンドです。**モデルレジストリ（Model Registry）** によるインテリジェントなリクエストルーティングを実現し、ローカルまたはクラウドプロバイダから適切なモデルバリアントの自動選択、パラメータ注入、非対応機能の自動ブロックを手動操作なしで行います。
 
 ## 主な機能
 
@@ -53,12 +54,13 @@ graph TB
         CHROMA[(ChromaDB)]
     end
 
-    subgraph "Ollama 推論エンジン"
+    subgraph "推論エンジン (Inference Engines)"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
         P4[phi4-mini]
         P4R[phi4-mini-reasoning]
+        GEM[Gemini 3 Flash / Pro]
     end
 
     UI -->|API リクエスト| ROUTER
@@ -70,16 +72,19 @@ graph TB
     REG -->|直接推論| L3
     REG -->|model_switch| P4
     REG -->|思考モード| P4R
+    REG -->|クラウドAPI| GEM
 
     style ROUTER fill:#009688
     style DB fill:#795548
     style REG fill:#2196F3
+    style GEM fill:#1A73E8
 ```
 
-## 登録済みモデル (Ollama)
+## サポートされるプロバイダとモデル
 
-各モデルの推論特性に合わせた最適化設定：
+RAG-Kura は、ローカル (Ollama) とクラウド (Gemini) 両方のバックエンドをサポートする抽象化レイヤを提供します：
 
+### ローカル (Ollama)
 | モデル | 推論戦略 | 備考 |
 |--------|----------|------|
 | [**qwen3.5:2b**](https://ollama.com/library/qwen3.5) | `parameter` | パラメータ注入により `Think` モード切替に対応 |
@@ -87,10 +92,17 @@ graph TB
 | [**llama3.2:3b**](https://ollama.com/library/llama3.2) | `none` | 標準的な対話モデル、推論切替なし |
 | [**phi4-mini**](https://ollama.com/library/phi4-mini) | `model_switch` | 推論時に `phi4-mini-reasoning` へ自動切り替え |
 
+### クラウド (Google Gemini)
+| モデル | 推論戦略 | 備考 |
+|--------|----------|------|
+| **Gemini 3 Flash** | `none` | 高速なクラウド・ルーティング |
+| **Gemini 3.1 Pro** | `thinking` | Gemini ネイティブの `ThinkingConfig` による深い推論 |
+
 ## 前提条件
 
 - Python 3.12+
-- [**Ollama**](https://ollama.com/) インストール済み、必要なモデルをプル済み
+- [**Ollama**](https://ollama.com/) インストール済み、必要なモデルをプル済み（完全にクラウド上の Gemini で実行する場合は任意）。
+- [**Google Gemini API キー**](https://aistudio.google.com/apikey)（完全にローカルの Ollama で実行する場合は任意）。
 - **PyTorch (CPU 版)**：デフォルトで CPU を使用し、Ollama 用の VRAM を節約します。VRAM に余裕がある場合は、GPU 版のインストールも可能です。
 
 ## ローカル開発
@@ -107,6 +119,10 @@ source .venv/bin/activate
 # 💡 リソース計画：デフォルトで CPU 版 PyTorch をインストールして VRAM を節約します。十分なリソースがある場合は、この行をスキップして直接 install -r を実行できます。
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
+
+# 環境設定
+cp .env.example .env
+# クラウド推論モデルを使用する場合は、.env を編集して GEMINI_API_KEY を貼り付けてください
 
 # ナレッジの取り込み（オプション）
 # Markdown ファイルを docs/ に配置し、以下を実行：
@@ -138,7 +154,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | DELETE | `/api/conversations/{id}` | 對話の削除 |
 | PATCH | `/api/conversations/{id}/title` | 對話タイトルの更新 |
 | POST | `/api/conversations/{id}/messages` | メッセージ送信（モデル/推論指定可） |
-| GET | `/api/models/check_loaded` | モデルが VRAM にロードされているか確認 |
+| GET | `/api/models/{id}/status` | モデルが VRAM / 利用可能にロードされているか確認 |
+| GET | `/api/status` | プロバイダ (Ollama/Gemini) の稼働状態を取得 |
 
 ## プロジェクト構成
 
@@ -166,7 +183,7 @@ rag-kura/
 | **バックエンド核心** | FastAPI, SQLite | 非同期推論、動的ルーティング、永続化に対応 |
 | **知識検索 (RAG)** | LangChain, ChromaDB | ローカルベクトルストア、Markdown 形式に対応 |
 | **埋め込みモデル** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU 実行**、SOTA 中文埋め込み技術、VRAM 節約 |
-| **推論エンジン** | [**Ollama**](https://ollama.com/) | ローカル LLM ランタイム (GPU 推論対応) |
+| **推論エンジン** | [**Ollama**](https://ollama.com/) / **Google Gemini** | ハイブリッド（ローカル/クラウド）推論ランタイムおよび関数呼び出し（Tool Calling） |
 
 ## セキュリティ
 

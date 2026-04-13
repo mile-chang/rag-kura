@@ -7,11 +7,12 @@
   </a>
 </div>
 
-> A local-first RAG knowledge assistant with dynamic model routing, capability guards, and multi-model support — powered by Ollama.
+> A hybrid RAG knowledge assistant with dynamic model routing, capability guards, and multi-provider support — powered by Ollama and Google Gemini.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Ollama](https://img.shields.io/badge/Ollama-local_LLM-black.svg)](https://ollama.com/)
+[![Gemini](https://img.shields.io/badge/Gemini-Cloud_API-1A73E8.svg)](https://aistudio.google.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [繁體中文](README.zh-TW.md) | [日本語](README.ja.md)
@@ -20,7 +21,7 @@
 
 ## Overview
 
-RAG-Kura is a local-first knowledge assistant backend built with FastAPI and Ollama. It features a **Model Registry** that enables intelligent request routing — automatically selecting the right model variant, injecting parameters, and guarding against unsupported capabilities — all without manual intervention.
+RAG-Kura is a knowledge assistant backend built with FastAPI, Ollama, and Google Gemini. It features a **Model Registry** that enables intelligent request routing — automatically selecting the right model variant from local or cloud providers, injecting parameters, and guarding against unsupported capabilities — all without manual intervention.
 
 ## Key Features
 
@@ -51,12 +52,13 @@ graph TB
         CHROMA[(ChromaDB)]
     end
 
-    subgraph "Ollama Engine"
+    subgraph "Inference Engines"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
         P4[phi4-mini]
         P4R[phi4-mini-reasoning]
+        GEM[Gemini 3 Flash / Pro]
     end
 
     UI -->|API Request| ROUTER
@@ -68,16 +70,19 @@ graph TB
     REG -->|Direct Inference| L3
     REG -->|model_switch| P4
     REG -->|Thinking Mode| P4R
+    REG -->|Cloud API| GEM
 
     style ROUTER fill:#009688
     style DB fill:#795548
     style REG fill:#2196F3
+    style GEM fill:#1A73E8
 ```
 
-## Supported Models (Ollama)
+## Supported Providers & Models
 
-Optimized configurations for specific model inference characteristics:
+RAG-Kura provides an abstraction layer capable of supporting both Local (Ollama) and Cloud (Gemini) backends:
 
+### Local (Ollama)
 | Model | Strategy | Notes |
 |-------|----------|-------|
 | [**qwen3.5:2b**](https://ollama.com/library/qwen3.5) | `parameter` | Supports `Think` mode via parameter injection |
@@ -85,10 +90,17 @@ Optimized configurations for specific model inference characteristics:
 | [**llama3.2:3b**](https://ollama.com/library/llama3.2) | `none` | Standard chat, no reasoning toggle |
 | [**phi4-mini**](https://ollama.com/library/phi4-mini) | `model_switch` | Swaps to `phi4-mini-reasoning` during inference |
 
+### Cloud (Google Gemini)
+| Model | Strategy | Notes |
+|-------|----------|-------|
+| **Gemini 3 Flash** | `none` | High-speed cloud routing |
+| **Gemini 3.1 Pro** | `thinking` | Employs Gemini's native `ThinkingConfig` for deeper reasoning |
+
 ## Prerequisites
 
 - Python 3.12+
-- [**Ollama**](https://ollama.com/) installed with required models pulled.
+- [**Ollama**](https://ollama.com/) installed with required models pulled (optional if running purely on Gemini).
+- [**Google Gemini API Key**](https://aistudio.google.com/apikey) (optional if running purely on local Ollama).
 - **PyTorch (CPU version)**: Defaults to CPU to save VRAM for Ollama; if you have sufficient VRAM, you may install the GPU version.
 
 ## Local Development
@@ -105,6 +117,10 @@ source .venv/bin/activate
 # 💡 Resource Planning: Defaults to CPU-only PyTorch to save VRAM. If your hardware is sufficient, skip this line and install via -r directly.
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
+
+# Environment Setup
+cp .env.example .env
+# Edit .env and paste your GEMINI_API_KEY if you intend to use Cloud reasoning models
 
 # Ingest Knowledge (Optional)
 # Place Markdown files in docs/, then run:
@@ -136,7 +152,8 @@ Detailed tasks are in `TODO.md`.
 | DELETE | `/api/conversations/{id}`| Delete a session |
 | PATCH | `/api/conversations/{id}/title` | Update session title |
 | POST | `/api/conversations/{id}/messages`| Send message (with model/reasoning) |
-| GET | `/api/models/check_loaded` | Check if model is in VRAM |
+| GET | `/api/models/{id}/status` | Check if model is in VRAM / loaded |
+| GET | `/api/status` | List provider availability (Ollama/Gemini) |
 
 ## Project Structure
 
@@ -164,7 +181,7 @@ rag-kura/
 | **Backend Core** | FastAPI, SQLite | Async execution, dynamic routing, and persistence |
 | **Retrieval (RAG)** | LangChain, ChromaDB | Local vector store, Markdown-based knowledge base |
 | **Embedding Model** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU Only**, SOTA Chinese embeddings, VRAM-efficient |
-| **Inference Engine** | [**Ollama**](https://ollama.com/) | Local model runtime with GPU acceleration |
+| **Inference Engines** | [**Ollama**](https://ollama.com/) / **Google Gemini** | Hybrid local/cloud model runtime with Tool Calling logic |
 
 ## Security
 

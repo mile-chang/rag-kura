@@ -9,11 +9,12 @@
 
 </div>
 
-> 一個本地優先的 RAG 知識庫助理，支援動態模型路由、能力防呆與多模型切換 — 由 Ollama 驅動。
+> 一個混合式 RAG 知識庫助理，支援動態模型路由、能力防呆與多供應商切換 — 由 Ollama 與 Google Gemini 驅動。
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.135+-009688.svg)](https://fastapi.tiangolo.com/)
 [![Ollama](https://img.shields.io/badge/Ollama-local_LLM-black.svg)](https://ollama.com/)
+[![Gemini](https://img.shields.io/badge/Gemini-Cloud_API-1A73E8.svg)](https://aistudio.google.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [English](README.md) | [日本語](README.ja.md)
@@ -22,7 +23,7 @@
 
 ## 概述
 
-RAG-Kura 是一個以本地推論為核心的知識庫助理後端，使用 FastAPI 與 Ollama 建構。它透過 **模型註冊表 (Model Registry)** 實現智慧請求路由 — 自動選擇正確的模型變體、注入參數、並攔截不支援的能力請求 — 無需手動介入。
+RAG-Kura 是一個支援本地與雲端混合推論的知識庫助理後端，使用 FastAPI、Ollama 與 Google Gemini 建構。它透過 **模型註冊表 (Model Registry)** 實現智慧請求路由 — 自動從本地或雲端設備選擇正確的模型變體、注入參數、並攔截不支援的能力請求 — 無需手動介入。
 
 ## 核心功能
 
@@ -53,12 +54,13 @@ graph TB
         CHROMA[(ChromaDB)]
     end
 
-    subgraph "Ollama 推論引擎"
+    subgraph "推論引擎 (Inference Engines)"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
         P4[phi4-mini]
         P4R[phi4-mini-reasoning]
+        GEM[Gemini 3 Flash / Pro]
     end
 
     UI -->|API 請求| ROUTER
@@ -70,16 +72,19 @@ graph TB
     REG -->|直接推論| L3
     REG -->|model_switch| P4
     REG -->|推理/思考模式| P4R
+    REG -->|雲端 API| GEM
 
     style ROUTER fill:#009688
     style DB fill:#795548
     style REG fill:#2196F3
+    style GEM fill:#1A73E8
 ```
 
-## 支援模型 (Ollama)
+## 支援的供應商與模型
 
-本專案針對不同模型的推論特性進行了優化配置：
+RAG-Kura 提供了一個靈活的抽象層，能夠同時支援本地端 (Ollama) 與雲端 (Gemini) 的後端：
 
+### 本地端 (Ollama)
 | 模型 | 推理策略 | 備註 |
 |------|---------|------|
 | [**qwen3.5:2b**](https://ollama.com/library/qwen3.5) | `parameter` | 透過參數注入支援 `Think` 模式切換 |
@@ -87,10 +92,17 @@ graph TB
 | [**llama3.2:3b**](https://ollama.com/library/llama3.2) | `none` | 標準對話模型，無推理切換 |
 | [**phi4-mini**](https://ollama.com/library/phi4-mini) | `model_switch` | 推理時自動切換至 `phi4-mini-reasoning` |
 
+### 雲端 (Google Gemini)
+| 模型 | 推理策略 | 備註 |
+|------|---------|------|
+| **Gemini 3 Flash** | `none` | 極速雲端常規對話路由 |
+| **Gemini 3.1 Pro** | `thinking` | 調用 Gemini 原生 `ThinkingConfig` 進行深度思考與推理 |
+
 ## 前置需求
 
 - Python 3.12+
-- [**Ollama**](https://ollama.com/) 已安裝，且所需模型已下載
+- [**Ollama**](https://ollama.com/) 已安裝，且所需模型已下載（若純粹依靠雲端 Gemini 推理則為可選）。
+- [**Google Gemini API Key**](https://aistudio.google.com/apikey)（若純粹依靠本地 Ollama 則為可選）。
 - **PyTorch (CPU 版本)**：預設使用 CPU 以節省顯存供 Ollama 使用；若您的 VRAM 充足，亦可手動處理為 GPU 版本。
 
 ## 本地開發
@@ -107,6 +119,10 @@ source .venv/bin/activate
 # 💡 資源規劃：預設安裝 CPU 版以節省顯存（VRAM），若顯存充足可略過此行直接 install -r
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements.txt
+
+# 環境設定
+cp .env.example .env
+# 請編輯 .env 檔案並貼上您的 GEMINI_API_KEY（若打算使用雲端模型）
 
 # 匯入知識庫 (可選)
 # 將 Markdown 檔案放入 docs/ 資料夾，然後執行：
@@ -138,7 +154,8 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | DELETE | `/api/conversations/{id}` | 刪除對話 |
 | PATCH | `/api/conversations/{id}/title` | 修改對話標題 |
 | POST | `/api/conversations/{id}/messages`| 發送訊息 (支援模型切換與推理) |
-| GET | `/api/models/check_loaded` | 檢查模型是否已載入 GPU |
+| GET | `/api/models/{id}/status` | 檢查模型是否已載入 VRAM / 連線正常 |
+| GET | `/api/status` | 取得供應商 (Ollama/Gemini) 狀態與模型清單 |
 
 ## 專案結構
 
@@ -166,7 +183,7 @@ rag-kura/
 | **後端核心** | FastAPI, SQLite | 支援異步推論、動態路由與 Client 隔離 |
 | **知識檢索 (RAG)** | LangChain, ChromaDB | 本地向量資料庫、支援 Markdown 知識庫 |
 | **向量化模型** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU 運行**，SOTA 中文嵌入技術，省下 VRAM |
-| **推論引擎** | [**Ollama**](https://ollama.com/) | 本地模型推論 (支援 GPU 加速運算) |
+| **推論引擎** | [**Ollama**](https://ollama.com/) / **Google Gemini** | 混合式地端與雲端模型推論引擎 (支援 Tool Calling 邏輯) |
 
 ## 安全性
 
