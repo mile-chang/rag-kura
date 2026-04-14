@@ -27,10 +27,11 @@ RAG-Kura is a knowledge assistant backend built with FastAPI, Ollama, and Google
 
 - **Retrieval-Augmented Generation (RAG)** — Integrates ChromaDB to answer questions based on local document knowledge.
 - **Modern Chat GUI (SPA)** — A responsive single-page application built with HTML/CSS/JS featuring multi-conversation management.
-- **Stop/Interrupt Generation** — Instantly stop model responses to improve user control.
 - **Dynamic Reasoning (Thinking Mode)** — Dedicated toggles for reasoning models with `parameter` and `model_switch` strategies.
 - **Smart Loading UI** — Real-time detection of model VRAM status with "Waking up engine" indicators for cold starts.
 - **Conversation Persistence** — SQLite-backed history with automatic titling and manual title editing support.
+- **Dual-Track API** — Supports both synchronous JSON responses for external consumers and real-time Server-Sent Events (SSE) streaming for web clients.
+- **Modular Architecture** — Cleanly decoupled backend separating configuration, inference engines, and HTTP route handlers.
 - **Model Registry** — Centralized declaration of model capabilities for intelligent routing.
 - **Security & Capability Guards** — Automatic rejection of unsupported requests (e.g., vision requests to text-only models).
 
@@ -43,36 +44,38 @@ graph TB
     end
 
     subgraph "FastAPI Backend"
-        ROUTER[REST API / Router]
+        API[API Routers]
+        INF[Inference Engines]
+        REG[Config & Registry]
         DB[(SQLite - Conversations)]
-        REG[Model Registry]
     end
 
     subgraph "Vector Store (RAG)"
         CHROMA[(ChromaDB)]
     end
 
-    subgraph "Inference Engines"
+    subgraph "Models & APIs"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
         P4[phi4-mini]
         P4R[phi4-mini-reasoning]
-        GEM[Gemini 3 Flash / Pro]
+        GEM[Gemini 3 Flash / Gemma 4]
     end
 
-    UI -->|API Request| ROUTER
-    ROUTER --> DB
-    ROUTER -->|Similarity Search| CHROMA
-    ROUTER --> REG
-    REG -->|Auto-routing| Q2
-    REG -->|Auto-routing| Q4
-    REG -->|Direct Inference| L3
-    REG -->|model_switch| P4
-    REG -->|Thinking Mode| P4R
-    REG -->|Cloud API| GEM
+    UI -->|API Request / SSE| API
+    API --> DB
+    API --> REG
+    API --> INF
+    INF -->|Similarity Search| CHROMA
+    INF -->|Auto-routing| Q2
+    INF -->|Auto-routing| Q4
+    INF -->|Direct Inference| L3
+    INF -->|model_switch| P4
+    INF -->|Thinking Mode| P4R
+    INF -->|Cloud API| GEM
 
-    style ROUTER fill:#009688
+    style API fill:#009688
     style DB fill:#795548
     style REG fill:#2196F3
     style GEM fill:#1A73E8
@@ -93,8 +96,8 @@ RAG-Kura provides an abstraction layer capable of supporting both Local (Ollama)
 ### Cloud (Google Gemini)
 | Model | Strategy | Notes |
 |-------|----------|-------|
-| **Gemini 3 Flash** | `none` | High-speed cloud routing |
-| **Gemini 3.1 Pro** | `thinking` | Employs Gemini's native `ThinkingConfig` for deeper reasoning |
+| **Gemini 3 Flash** | `thinking_level` | High-speed cloud routing with reasoning support |
+| **Gemma 4 31B** | `thinking_level_optional` | Large reasoning model via Gemini API |
 
 ## Prerequisites
 
@@ -152,6 +155,7 @@ Detailed tasks are in `TODO.md`.
 | DELETE | `/api/conversations/{id}`| Delete a session |
 | PATCH | `/api/conversations/{id}/title` | Update session title |
 | POST | `/api/conversations/{id}/messages`| Send message (with model/reasoning) |
+| POST | `/api/upload` | Upload knowledge base document |
 | GET | `/api/models/{id}/status` | Check if model is in VRAM / loaded |
 | GET | `/api/status` | List provider availability (Ollama/Gemini) |
 
@@ -159,7 +163,11 @@ Detailed tasks are in `TODO.md`.
 
 ```
 rag-kura/
-├── main.py              # FastAPI core & routing
+├── main.py              # Entry point & static mount
+├── config.py            # App configuration & Model registry
+├── schemas.py           # Pydantic data models
+├── api/                 # FastAPI HTTP route handlers
+├── inference/           # Inference engines & generators
 ├── database.py          # SQLite persistence layer
 ├── chat_history.db      # SQLite database (gitignored)
 ├── ingest.py            # Knowledge ingestion script

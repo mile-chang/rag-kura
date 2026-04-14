@@ -29,10 +29,11 @@ RAG-Kura 是一個支援本地與雲端混合推論的知識庫助理後端，�
 
 - **檢索增強生成 (RAG)** — 整合 ChromaDB 向量資料庫，基於本地文件進行問答
 - **現代化聊天介面 (SPA)** — 使用 HTML/CSS/JS 打造的單頁式應用，支援多對話管理
-- **中斷/停止生成** — 支援即時停止模型回應，提升使用體驗
 - **思考模式 (Thinking Mode)** — 針對推理模型提供專屬開關，支援 `parameter` 與 `model_switch` 策略
 - **智慧負載提示** — 自動檢測模型是否載入 GPU，並提供「正在載入引擎」的溫馨提示
 - **對話持久化** — 使用 SQLite 儲存對話紀錄，支援標題自動生成與手動編輯
+- **雙軌 API 架構** — 同時支援供外部 API 消費者使用的同步 JSON 回應，以及供 Web 網頁端使用的即時 Server-Sent Events (SSE) 串流
+- **模組化後端** — 職責分離的解耦架構，明確劃分環境設定、推論引擎與 HTTP 路由介面
 - **模型註冊表** — 集中式模型能力宣告，所有路由決策的單一來源
 - **安全性與防呆** — 自動拒絕不支援的能力請求（如無視覺模型請求圖片）
 
@@ -45,36 +46,38 @@ graph TB
     end
 
     subgraph "FastAPI 後端"
-        ROUTER[REST API / 路由器]
+        API[API 路由層]
+        INF[推論引擎層]
+        REG[設定與模型註冊表]
         DB[(SQLite - 對話紀錄)]
-        REG[模型註冊表]
     end
 
     subgraph "向量資料庫 (RAG)"
         CHROMA[(ChromaDB)]
     end
 
-    subgraph "推論引擎 (Inference Engines)"
+    subgraph "模型與 API 端點"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
         P4[phi4-mini]
         P4R[phi4-mini-reasoning]
-        GEM[Gemini 3 Flash / Pro]
+        GEM[Gemini 3 Flash / Gemma 4]
     end
 
-    UI -->|API 請求| ROUTER
-    ROUTER --> DB
-    ROUTER -->|相似度搜尋| CHROMA
-    ROUTER --> REG
-    REG -->|自動切換策略| Q2
-    REG -->|自動切換策略| Q4
-    REG -->|直接推論| L3
-    REG -->|model_switch| P4
-    REG -->|推理/思考模式| P4R
-    REG -->|雲端 API| GEM
+    UI -->|API 請求 / SSE| API
+    API --> DB
+    API --> REG
+    API --> INF
+    INF -->|相似度搜尋| CHROMA
+    INF -->|自動切換策略| Q2
+    INF -->|自動切換策略| Q4
+    INF -->|直接推論| L3
+    INF -->|model_switch| P4
+    INF -->|推理/思考模式| P4R
+    INF -->|雲端 API| GEM
 
-    style ROUTER fill:#009688
+    style API fill:#009688
     style DB fill:#795548
     style REG fill:#2196F3
     style GEM fill:#1A73E8
@@ -95,8 +98,8 @@ RAG-Kura 提供了一個靈活的抽象層，能夠同時支援本地端 (Ollama
 ### 雲端 (Google Gemini)
 | 模型 | 推理策略 | 備註 |
 |------|---------|------|
-| **Gemini 3 Flash** | `none` | 極速雲端常規對話路由 |
-| **Gemini 3.1 Pro** | `thinking` | 調用 Gemini 原生 `ThinkingConfig` 進行深度思考與推理 |
+| **Gemini 3 Flash** | `thinking_level` | 極速雲端常規對話路由（支援推理） |
+| **Gemma 4 31B** | `thinking_level_optional` | 透過 Gemini API 調用的大型推理模型 |
 
 ## 前置需求
 
@@ -154,6 +157,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | DELETE | `/api/conversations/{id}` | 刪除對話 |
 | PATCH | `/api/conversations/{id}/title` | 修改對話標題 |
 | POST | `/api/conversations/{id}/messages`| 發送訊息 (支援模型切換與推理) |
+| POST | `/api/upload` | 上傳並解析知識庫文件 |
 | GET | `/api/models/{id}/status` | 檢查模型是否已載入 VRAM / 連線正常 |
 | GET | `/api/status` | 取得供應商 (Ollama/Gemini) 狀態與模型清單 |
 
@@ -161,7 +165,11 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ```
 rag-kura/
-├── main.py              # FastAPI 核心應用程式與傳輸路由
+├── main.py              # 應用程式進入點與靜態檔案路由
+├── config.py            # 應用程式設定與模型註冊表
+├── schemas.py           # Pydantic 資料模型
+├── api/                 # FastAPI HTTP 路由介面層
+├── inference/           # 推論引擎與 SSE 串流產生器
 ├── database.py          # SQLite 對話持久化邏輯
 ├── chat_history.db      # SQLite 資料庫檔案 (已排除版控)
 ├── ingest.py            # 知識庫寫入腳本

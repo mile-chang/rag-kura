@@ -29,10 +29,11 @@ RAG-Kura は、FastAPI、Ollama、および Google Gemini で構築されたナ�
 
 - **検索拡張生成 (RAG)** — ChromaDBを統合し、ローカルドキュメントの知識に基づいて質問に応答。
 - **モダンなチャット UI (SPA)** — HTML/CSS/JS で構築されたレスポンシブなシングルページアプリケーション。
-- **生成の中断/停止** — モデルの回答を即座に停止し、ユーザーのコントロール性を向上。
 - **動的推論トグル (思考モード)** — 推論モデル向けに `parameter` と `model_switch` 戦略をサポート。
 - **スマートなロード UI** — モデルの VRAM 状態をリアルタイムで検知し、ロード中のインジケーターを表示。
 - **対話の永続化** — SQLite による履歴保存、タイトルの自動生成および手動編集に対応。
+- **デュアルトラック API** — 外部利用者向けの同期 JSON レスポンスと、Web クライアント向けのリアルタイム Server-Sent Events (SSE) ストリーミングを両立。
+- **モジュラーアーキテクチャ** — 設定、推論エンジン、HTTP ルーターを明確に分離したクリーンなバックエンド設計。
 - **モデルレジストリ** — 全登録モデルの機能を一元管理し、最適なルーティングを実現。
 - **セキュリティ & 機能ガード** — 非対応機能（テキスト専用モデルへの画像送信など）のリクエストを自動的にブロック。
 
@@ -45,36 +46,38 @@ graph TB
     end
 
     subgraph "FastAPI バックエンド"
-        ROUTER[REST API / ルーター]
+        API[API ルーター]
+        INF[推論エンジン層]
+        REG[環境設定 & モデルレジストリ]
         DB[(SQLite - 対話履歴)]
-        REG[Model Registry]
     end
 
     subgraph "ベクトルストア (RAG)"
         CHROMA[(ChromaDB)]
     end
 
-    subgraph "推論エンジン (Inference Engines)"
+    subgraph "モデル & API"
         Q2[qwen3.5:2b]
         Q4[qwen3.5:4b]
         L3[llama3.2:3b]
         P4[phi4-mini]
         P4R[phi4-mini-reasoning]
-        GEM[Gemini 3 Flash / Pro]
+        GEM[Gemini 3 Flash / Gemma 4]
     end
 
-    UI -->|API リクエスト| ROUTER
-    ROUTER --> DB
-    ROUTER -->|類似度検索| CHROMA
-    ROUTER --> REG
-    REG -->|自動ルーティング| Q2
-    REG -->|自動ルーティング| Q4
-    REG -->|直接推論| L3
-    REG -->|model_switch| P4
-    REG -->|思考モード| P4R
-    REG -->|クラウドAPI| GEM
+    UI -->|API リクエスト / SSE| API
+    API --> DB
+    API --> REG
+    API --> INF
+    INF -->|類似度検索| CHROMA
+    INF -->|自動ルーティング| Q2
+    INF -->|自動ルーティング| Q4
+    INF -->|直接推論| L3
+    INF -->|model_switch| P4
+    INF -->|思考モード| P4R
+    INF -->|クラウドAPI| GEM
 
-    style ROUTER fill:#009688
+    style API fill:#009688
     style DB fill:#795548
     style REG fill:#2196F3
     style GEM fill:#1A73E8
@@ -95,8 +98,8 @@ RAG-Kura は、ローカル (Ollama) とクラウド (Gemini) 両方のバック
 ### クラウド (Google Gemini)
 | モデル | 推論戦略 | 備考 |
 |--------|----------|------|
-| **Gemini 3 Flash** | `none` | 高速なクラウド・ルーティング |
-| **Gemini 3.1 Pro** | `thinking` | Gemini ネイティブの `ThinkingConfig` による深い推論 |
+| **Gemini 3 Flash** | `thinking_level` | 推論をサポートする高速なクラウドルーティング |
+| **Gemma 4 31B** | `thinking_level_optional` | Gemini API を経由する大規模推論モデル |
 
 ## 前提条件
 
@@ -154,6 +157,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 | DELETE | `/api/conversations/{id}` | 對話の削除 |
 | PATCH | `/api/conversations/{id}/title` | 對話タイトルの更新 |
 | POST | `/api/conversations/{id}/messages` | メッセージ送信（モデル/推論指定可） |
+| POST | `/api/upload` | ナレッジベースドキュメントのアップロード |
 | GET | `/api/models/{id}/status` | モデルが VRAM / 利用可能にロードされているか確認 |
 | GET | `/api/status` | プロバイダ (Ollama/Gemini) の稼働状態を取得 |
 
@@ -161,7 +165,11 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 ```
 rag-kura/
-├── main.py              # FastAPI コア & 転送ルーティング
+├── main.py              # エンドポイント & 静的ファイルマウント
+├── config.py            # 環境設定 & モデルレジストリ
+├── schemas.py           # Pydantic データモデル
+├── api/                 # FastAPI HTTP ルーター層
+├── inference/           # 推論エンジン & SSE ジェネレーター
 ├── database.py          # SQLite 永続化ロジック
 ├── chat_history.db      # SQLite データベース（無視対象）
 ├── ingest.py            # ナレッジ取り込みスクリプト
