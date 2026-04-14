@@ -17,13 +17,13 @@ let isStopping = false;
 
 const AVAILABLE_MODELS = [
     // -- Ollama local models (require a running Ollama daemon) ---------------
-    { id: "qwen3.5:2b",  name: "Qwen 3.5 2B",  provider: "ollama", supportsThinking: true },
-    { id: "qwen3.5:4b",  name: "Qwen 3.5 4B",  provider: "ollama", supportsThinking: true },
+    { id: "qwen3.5:2b", name: "Qwen 3.5 2B", provider: "ollama", supportsThinking: true },
+    { id: "qwen3.5:4b", name: "Qwen 3.5 4B", provider: "ollama", supportsThinking: true },
     { id: "llama3.2:3b", name: "Llama 3.2 3B", provider: "ollama", supportsThinking: false },
-    { id: "phi4-mini",   name: "Phi-4 Mini",   provider: "ollama", supportsThinking: true },
-    // -- Google Gemini cloud models (require GEMINI_API_KEY on the server) --
-    { id: "gemini-3-flash-preview",  name: "Gemini 3 Flash", provider: "gemini", supportsThinking: false },
-    { id: "gemini-3.1-pro-preview",  name: "Gemini 3.1 Pro", provider: "gemini", supportsThinking: true },
+    { id: "phi4-mini", name: "Phi-4 Mini", provider: "ollama", supportsThinking: true },
+    // -- Google cloud models (require GEMINI_API_KEY on the server) --
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", provider: "gemini", supportsThinking: false },
+    { id: "gemma-4-31b-it", name: "Gemma 4 31B", provider: "gemini", supportsThinking: true },
 ];
 let selectedModelId = "qwen3.5:2b";
 let isThinkingEnabled = false;
@@ -87,12 +87,12 @@ async function loadConversations() {
         const res = await apiFetch("/conversations");
         const convs = await res.json();
         renderConversationList(convs);
-        
+
         // Sync header title, or reset UI if the active conversation was deleted elsewhere
         if (activeConversationId) {
             const activeConv = convs.find(c => c.id === activeConversationId);
             const btnEdit = $("btn-edit-title");
-            
+
             if (activeConv) {
                 if ($headerTitle) $headerTitle.textContent = activeConv.title;
                 if (btnEdit) btnEdit.classList.remove("hidden");
@@ -135,7 +135,7 @@ async function selectConversation(id) {
         const conv = await res.json();
         $headerTitle.textContent = conv.title;
         renderMessages(conv.messages);
-        
+
         const btnEdit = $("btn-edit-title");
         if (btnEdit) btnEdit.classList.remove("hidden");
     } catch (err) {
@@ -167,35 +167,35 @@ function editConversationTitle() {
     const $title = $("header-title");
     const $btnEdit = $("btn-edit-title");
     const currentTitle = $title.textContent;
-    
+
     // Create inline input
     const $input = document.createElement("input");
     $input.type = "text";
     $input.value = currentTitle;
     $input.maxLength = 100; // Hard cap prevents layout breakage
     $input.className = "bg-white/[0.06] border border-indigo-500/50 rounded px-2 py-0.5 text-sm text-slate-200 outline-none w-48 sm:w-64 font-semibold text-slate-300";
-    
+
     $title.parentNode.replaceChild($input, $title);
     if ($btnEdit) $btnEdit.classList.add("hidden");
     $input.focus();
     $input.select();
-    
+
     let isSaved = false;
     const saveTitle = async () => {
         if (isSaved) return;
         isSaved = true;
-        
+
         // Strip out excessive lengths and sanitize slightly
         const newTitle = ($input.value.trim() || currentTitle).substring(0, 100);
-        
+
         // Swap back to text element instantly for snappy UX
         if ($input.parentNode) {
             $input.parentNode.replaceChild($title, $input);
         }
-        
+
         // Only unhide if we haven't switched to the home banner
         if ($btnEdit && activeConversationId) $btnEdit.classList.remove("hidden");
-        
+
         if (newTitle !== currentTitle) {
             if (activeConversationId === editingConvId) {
                 $title.textContent = "Updating...";
@@ -220,7 +220,7 @@ function editConversationTitle() {
             }
         }
     };
-    
+
     $input.addEventListener("blur", saveTitle);
     $input.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
@@ -241,15 +241,15 @@ async function sendMessage() {
 
     $messageInput.value = "";
     autoResize($messageInput);
-    
+
     currentAbortController = new AbortController();
     isStopping = false;
-    
+
     setGenerating(true);
     appendMessage("user", text);
 
     let thinkingId = null;
-    
+
     // Ollama lazily loads models into VRAM. Gemini is a cloud architecture and requires no warmup.
     let isWarmingUp = false;
     try {
@@ -295,39 +295,9 @@ async function sendMessage() {
             loadConversations();
         }
 
-        const res = await apiFetch(
-            `/conversations/${activeConversationId}/messages`,
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    message: text,
-                    base_model: selectedModelId,
-                    use_reasoning: isThinkingEnabled,
-                    use_rag: useRAG,
-                }),
-                signal: currentAbortController.signal
-            }
-        );
+        // All models use SSE streaming for real-time token display
+        await sendMessageStream(text, thinkingId);
 
-        removeThinking(thinkingId);
-
-        if (!res.ok) {
-            const err = await res.json();
-            appendMessage("assistant", `Error: ${err.detail || res.statusText}`);
-            return;
-        }
-
-        const data = await res.json();
-        appendMessage("assistant", data.content, {
-            model: data.model,
-            elapsed: data.elapsed_seconds,
-            tools: data.tools_used,
-            rag: data.use_rag,
-        });
-
-        // Refresh sidebar (title may have been auto-generated)
-        await loadConversations();
     } catch (err) {
         removeThinking(thinkingId);
         if (err.name === 'AbortError') {
@@ -342,17 +312,272 @@ async function sendMessage() {
     }
 }
 
+
+/**
+ * Send a message using SSE streaming and render tokens in real time.
+ *
+ * Uses fetch + ReadableStream + TextDecoder with a string buffer to correctly
+ * handle TCP packet fragmentation: only complete "data: ...\n\n" segments are
+ * JSON-parsed; incomplete trailing data waits in the buffer for the next read.
+ *
+ * SSE event types from the server:
+ *   status — tool is executing (shown in the thinking bubble)
+ *   chunk  — a text token to append to the assistant bubble
+ *   done   — stream complete; carries model/elapsed/tools_used metadata
+ *   error  — server-side error message
+ *
+ * @param {string} text        The user message text.
+ * @param {string} thinkingId  ID of the thinking indicator element to update.
+ */
+async function sendMessageStream(text, thinkingId) {
+    const res = await apiFetch(
+        `/conversations/${activeConversationId}/messages`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                message: text,
+                base_model: selectedModelId,
+                use_reasoning: isThinkingEnabled,
+                use_rag: useRAG,
+                stream: true,
+            }),
+            signal: currentAbortController.signal,
+        }
+    );
+
+    if (!res.ok) {
+        removeThinking(thinkingId);
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        appendMessage("assistant", `Error: ${err.detail || res.statusText}`);
+        return;
+    }
+
+    // Create the assistant bubble immediately (before the first token arrives)
+    removeThinking(thinkingId);
+    const bubbleId = "stream-bubble-" + Date.now();
+    const wrapper = document.createElement("div");
+    wrapper.id = bubbleId;
+    wrapper.className = "chat-bubble";
+    wrapper.innerHTML = `
+        <div class="flex justify-start">
+            <div class="max-w-[85%]">
+                <div class="msg-content text-sm text-slate-300 leading-relaxed"></div>
+                <div class="msg-meta mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600 hidden"></div>
+            </div>
+        </div>`;
+    $msgContainer.appendChild(wrapper);
+    scrollToBottom();
+
+    const $content = wrapper.querySelector(".msg-content");
+    const $meta = wrapper.querySelector(".msg-meta");
+
+    // Status indicator shown while tools are executing
+    let statusEl = null;
+    const showStatus = (msg) => {
+        if (!statusEl) {
+            statusEl = document.createElement("div");
+            statusEl.className = "flex items-center gap-2 mb-2 text-xs text-indigo-400";
+            $content.prepend(statusEl);
+        }
+        statusEl.innerHTML = `
+            <svg class="animate-spin h-3 w-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            <span>${escapeHtml(msg)}</span>`;
+    };
+
+    // ── Thinking accordion helpers ──
+    let thinkEl = null;       // The live accordion DOM element
+    let thinkBody = null;     // The scrollable body inside it
+    let isInThink = false;    // Are we currently inside <think> content?
+    let thinkBuffer = "";     // Accumulated thinking text (for the body)
+
+    const createThinkAccordion = () => {
+        thinkEl = document.createElement("div");
+        thinkEl.className = "think-accordion mb-3 rounded-xl border border-white/[0.06] bg-white/[0.03] overflow-hidden";
+        thinkEl.innerHTML = `
+            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-400 hover:text-slate-300 transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
+                <svg class="think-spinner w-4 h-4 flex-shrink-0 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M3 12h3m12 0h3M5.636 5.636l2.122 2.122m8.484 8.484l2.122 2.122M5.636 18.364l2.122-2.122m8.484-8.484l2.122-2.122"/>
+                </svg>
+                <span class="think-label font-medium">思考中…</span>
+                <svg class="think-chevron w-3 h-3 ml-auto transition-transform" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/>
+                </svg>
+            </button>
+            <div class="think-body px-3 pb-3 text-xs text-slate-500 leading-relaxed whitespace-pre-wrap font-mono max-h-64 overflow-y-auto"></div>`;
+        thinkBody = thinkEl.querySelector(".think-body");
+        $content.appendChild(thinkEl);
+    };
+
+    const finaliseThinkAccordion = () => {
+        if (!thinkEl) return;
+        // Swap spinner for static icon, update label, auto-collapse
+        const spinner = thinkEl.querySelector(".think-spinner");
+        spinner.outerHTML = `<svg class="w-4 h-4 flex-shrink-0 text-indigo-400/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>`;
+        thinkEl.querySelector(".think-label").textContent = "已完成思考";
+        // Collapse by default (toggle open class off)
+        thinkEl.classList.remove("open");
+        thinkEl = null;
+        thinkBody = null;
+    };
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let accumulatedText = "";   // Only the non-think, final answer text
+    let rawChunkBuffer = "";     // Carry-over for split <think>/</ think> tags
+
+    // A small <div> that holds only the final answer (appears after accordion)
+    const $answer = document.createElement("div");
+    $content.appendChild($answer);
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            // Append decoded bytes to the buffer
+            buffer += decoder.decode(value, { stream: true });
+
+            // Split on the SSE double-newline delimiter.
+            // Keep the last (potentially incomplete) segment in the buffer.
+            const segments = buffer.split("\n\n");
+            buffer = segments.pop(); // last element may be incomplete
+
+            for (const segment of segments) {
+                const line = segment.trim();
+                if (!line.startsWith("data: ")) continue;
+
+                let event;
+                try {
+                    event = JSON.parse(line.slice(6)); // strip "data: " prefix
+                } catch {
+                    console.warn("SSE JSON parse error:", line);
+                    continue;
+                }
+
+                switch (event.type) {
+                    case "status":
+                        showStatus(event.content);
+                        break;
+
+                    case "chunk": {
+                        // Remove status indicator once real text starts flowing
+                        if (statusEl) { statusEl.remove(); statusEl = null; }
+
+                        // Process the new content, routing into accordion or answer
+                        rawChunkBuffer += event.content;
+
+                        // Parse out <think> and </think> boundaries
+                        let processed = rawChunkBuffer;
+                        rawChunkBuffer = "";
+
+                        while (processed.length > 0) {
+                            if (!isInThink) {
+                                const startIdx = processed.indexOf("<think>");
+                                if (startIdx === -1) {
+                                    // Check for partial tag at end
+                                    const partial = "<think>";
+                                    let tailMatch = -1;
+                                    for (let l = 1; l < partial.length; l++) {
+                                        if (processed.endsWith(partial.slice(0, l))) { tailMatch = l; break; }
+                                    }
+                                    if (tailMatch > 0) {
+                                        accumulatedText += processed.slice(0, processed.length - tailMatch);
+                                        rawChunkBuffer = processed.slice(processed.length - tailMatch);
+                                    } else {
+                                        accumulatedText += processed;
+                                    }
+                                    processed = "";
+                                } else {
+                                    accumulatedText += processed.slice(0, startIdx);
+                                    processed = processed.slice(startIdx + 7); // skip "<think>"
+                                    isInThink = true;
+                                    createThinkAccordion();
+                                    // Spin the spinner
+                                    const sp = thinkEl?.querySelector(".think-spinner");
+                                    if (sp) sp.style.animation = "spin 1s linear infinite";
+                                }
+                            } else {
+                                const endIdx = processed.indexOf("</think>");
+                                if (endIdx === -1) {
+                                    // Still in think; check for partial closing tag
+                                    const partial = "</think>";
+                                    let tailMatch = -1;
+                                    for (let l = 1; l < partial.length; l++) {
+                                        if (processed.endsWith(partial.slice(0, l))) { tailMatch = l; break; }
+                                    }
+                                    if (tailMatch > 0) {
+                                        thinkBuffer += processed.slice(0, processed.length - tailMatch);
+                                        rawChunkBuffer = processed.slice(processed.length - tailMatch);
+                                    } else {
+                                        thinkBuffer += processed;
+                                    }
+                                    if (thinkBody) thinkBody.textContent = thinkBuffer;
+                                    processed = "";
+                                } else {
+                                    thinkBuffer += processed.slice(0, endIdx);
+                                    if (thinkBody) thinkBody.textContent = thinkBuffer;
+                                    processed = processed.slice(endIdx + 8); // skip "</think>"
+                                    isInThink = false;
+                                    thinkBuffer = "";
+                                    finaliseThinkAccordion();
+                                }
+                            }
+                        }
+
+                        $answer.innerHTML = renderMarkdown(accumulatedText);
+                        scrollToBottom();
+                        break;
+                    }
+
+                    case "done": {
+                        if (statusEl) { statusEl.remove(); statusEl = null; }
+                        finaliseThinkAccordion(); // safety net if stream ended mid-think
+                        // Render final metadata footer
+                        const toolsLabel = event.tools_used?.length
+                            ? event.tools_used.join(", ")
+                            : "None";
+                        $meta.innerHTML = `
+                            <span>${escapeHtml(event.model || selectedModelId)}</span>
+                            <span class="text-slate-700">|</span>
+                            <span>${event.elapsed_seconds}s</span>
+                            <span class="text-slate-700">|</span>
+                            <span>Tools: ${escapeHtml(toolsLabel)}</span>
+                            ${useRAG ? '<span class="text-slate-700">|</span><span class="text-indigo-500">RAG</span>' : ""}
+                        `;
+                        $meta.classList.remove("hidden");
+                        // Refresh sidebar (title may have been auto-generated)
+                        await loadConversations();
+                        break;
+                    }
+
+                    case "error":
+                        if (statusEl) { statusEl.remove(); statusEl = null; }
+                        $content.innerHTML = `<span class="text-red-400">Error: ${escapeHtml(event.content)}</span>`;
+                        break;
+                }
+            }
+        }
+    } finally {
+        reader.releaseLock();
+    }
+}
+
 function stopGeneration() {
     if (!isGenerating || isStopping || !currentAbortController) return;
-    
+
     isStopping = true;
     const btnStop = document.getElementById("btn-stop");
-    
+
     // Change to spinning loader
     if (btnStop) {
         btnStop.innerHTML = `<svg class="animate-spin h-4 w-4 text-slate-300" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
     }
-    
+
     // Delay slightly to show the animation
     setTimeout(() => {
         if (currentAbortController) {
@@ -559,7 +784,7 @@ function autoResize(el) {
 function setGenerating(value) {
     isGenerating = value;
     const btnStop = document.getElementById("btn-stop");
-    
+
     if (value) {
         $btnSend.classList.add("hidden");
         if (btnStop) {
@@ -576,7 +801,7 @@ function setGenerating(value) {
         $btnSend.disabled = !$messageInput.value.trim();
         $messageInput.focus();
     }
-    
+
     $messageInput.disabled = value;
 }
 
@@ -591,7 +816,35 @@ function scrollToBottom() {
 
 function renderMarkdown(text) {
     if (!text) return "";
-    let html = escapeHtml(text);
+
+    // ── Strip out any <think>…</think> blocks in saved messages (render as accordion) ──
+    let html = text.replace(/<think>([\s\S]*?)<\/think>/g, (_, thinkContent) => {
+        const escaped = escapeHtml(thinkContent.trim());
+        return `<div class="think-accordion mb-3 rounded-xl border border-white/[0.06] bg-white/[0.03] overflow-hidden">
+            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-400 hover:text-slate-300 transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
+                <svg class="w-4 h-4 flex-shrink-0 text-indigo-400/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+                <span class="think-label font-medium">已完成思考</span>
+                <svg class="think-chevron w-3 h-3 ml-auto transition-transform" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+            </button>
+            <div class="think-body px-3 pb-3 text-xs text-slate-500 leading-relaxed whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">${escaped}</div>
+        </div>`;
+    });
+
+    html = escapeHtml(html
+        .replace(/<div class="think-accordion[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/g, "__THINK_BLOCK__")
+    );
+
+    // Re-do: process cleanly — split on think-accordion placeholders
+    // to avoid double-escaping the accordion HTML we just built.
+    // Strategy: build final html by processing raw text minus think blocks.
+    const thinkBlocks = [];
+    let cleanText = text.replace(/<think>[\s\S]*?<\/think>/g, (match) => {
+        thinkBlocks.push(match);
+        return `\x00THINK${thinkBlocks.length - 1}\x00`;
+    });
+
+    // Now escape and markdown-render the clean text
+    html = escapeHtml(cleanText);
 
     // Fenced code blocks
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
@@ -633,6 +886,21 @@ function renderMarkdown(text) {
         html = html.replace(new RegExp(`(</${tag}>)</p>`, "g"), "$1");
     }
     html = html.replace(/<p>\s*<\/p>/g, "");
+
+    // Re-inject think accordion blocks
+    html = html.replace(/\x00THINK(\d+)\x00/g, (_, idx) => {
+        const thinkContent = thinkBlocks[parseInt(idx)]
+            .replace(/<think>([\s\S]*?)<\/think>/, (__, inner) => inner.trim());
+        const escaped = escapeHtml(thinkContent);
+        return `<div class="think-accordion mb-3 rounded-xl border border-white/[0.06] bg-white/[0.03] overflow-hidden">
+            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-400 hover:text-slate-300 transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
+                <svg class="w-4 h-4 flex-shrink-0 text-indigo-400/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9  5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
+                <span class="think-label font-medium">已完成思考</span>
+                <svg class="think-chevron w-3 h-3 ml-auto transition-transform" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+            </button>
+            <div class="think-body px-3 pb-3 text-xs text-slate-500 leading-relaxed whitespace-pre-wrap font-mono max-h-64 overflow-y-auto">${escaped}</div>
+        </div>`;
+    });
 
     return html;
 }
@@ -753,9 +1021,9 @@ function renderModelDropdown() {
      * @param {boolean} available  - Whether the provider backend is reachable.
      */
     const renderOption = (m, available) => {
-        const isSelected  = m.id === selectedModelId;
+        const isSelected = m.id === selectedModelId;
         const unavailableLabel = available ? "" : `<span class="text-[10px] text-slate-600 ml-1">unavailable</span>`;
-        const tooltip = available ? "" : `title="${m.provider === 'ollama' ? 'Ollama not available on this server' : 'GEMINI_API_KEY not configured'}"` ;
+        const tooltip = available ? "" : `title="${m.provider === 'ollama' ? 'Ollama not available on this server' : 'GEMINI_API_KEY not configured'}"`;
 
         // Provider icon: lightning bolt for local, sparkle for cloud
         const icon = m.provider === "gemini"
