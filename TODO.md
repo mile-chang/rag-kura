@@ -12,7 +12,7 @@
 - [ ] Add GitHub Actions for linting and automated tests
 
 ## Pending / Future Features
-- [ ] Add SSE Streaming response (`StreamingResponse`)
+- [x] Add SSE Streaming response (`StreamingResponse`)
   - Thinking mode: Toggle-able `<think>` block, then stream final response
 - [ ] Implement user settings (Dark/Light mode toggle, Persistence TTL)
 - [ ] Add multi-modal file support (Images, PDF tables)
