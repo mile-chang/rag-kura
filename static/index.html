@@ -359,40 +359,62 @@
     <!-- ================================================================= -->
     <!-- SIDEBAR                                                           -->
     <!-- ================================================================= -->
-    <aside id="sidebar" class="w-64 flex-shrink-0 flex flex-col h-full border-r border-border bg-sidebar transition-colors duration-200">
+    <aside id="sidebar" data-state="expanded" class="group w-64 data-[state=collapsed]:-ml-64 md:data-[state=collapsed]:ml-0 md:data-[state=collapsed]:w-16 flex-shrink-0 flex flex-col h-full border-r border-border bg-sidebar transition-all duration-300 ease-in-out relative z-30">
 
         <!-- New Chat button -->
-        <div class="p-3">
-            <button id="btn-new-chat" onclick="createConversation()" class="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium
-                           border border-border text-primary bg-surface hover:bg-hover focus-visible:ring-2 focus-visible:ring-focus outline-none transition-colors cursor-pointer">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+        <div class="p-3 md:group-data-[state=collapsed]:p-2">
+            <button id="btn-new-chat" onclick="handleNewChatClick()" title="New Chat" class="w-full flex items-center md:group-data-[state=collapsed]:justify-center gap-2 px-3 md:group-data-[state=collapsed]:px-0 py-2.5 rounded-lg text-sm font-medium
+                           border border-border text-primary bg-surface hover:bg-hover focus-visible:ring-2 focus-visible:ring-focus outline-none transition-colors cursor-pointer whitespace-nowrap">
+                <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z" />
                 </svg>
-                New Chat
+                <span class="md:group-data-[state=collapsed]:hidden">New Chat</span>
             </button>
         </div>
 
         <!-- Conversation list -->
-        <nav id="conv-list" class="flex-1 overflow-y-auto px-2 space-y-0.5">
+        <nav id="conv-list" class="flex-1 overflow-y-auto px-2 space-y-0.5 md:group-data-[state=collapsed]:opacity-0 md:group-data-[state=collapsed]:invisible transition-opacity duration-200">
             <!-- Populated by JS -->
         </nav>
 
-        <!-- User Profile (Placeholder) -->
-        <div class="border-t border-border p-3">
-            <button class="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-hover focus-visible:ring-2 focus-visible:ring-focus outline-none transition-colors cursor-pointer text-left">
-                <div
-                    class="w-8 h-8 rounded-full bg-gradient-to-tr from-brand to-purple-500 flex-shrink-0 flex items-center justify-center text-inverse text-sm font-semibold">
-                    U
+        <!-- User Profile -->
+        <div class="relative border-t border-border p-3 md:group-data-[state=collapsed]:p-2 md:group-data-[state=collapsed]:flex md:group-data-[state=collapsed]:justify-center">
+            <button id="btn-user-profile" onclick="handleProfileClick(event)" title="Log In" class="w-full flex items-center md:group-data-[state=collapsed]:justify-center gap-3 md:group-data-[state=collapsed]:gap-0 px-3 md:group-data-[state=collapsed]:px-0 py-2.5 rounded-lg hover:bg-hover focus-visible:ring-2 focus-visible:ring-focus outline-none transition-colors cursor-pointer text-left">
+                <div id="profile-avatar"
+                    class="w-8 h-8 rounded-full bg-surface-2 border border-border flex-shrink-0 flex items-center justify-center text-muted">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
                 </div>
-                <div class="flex-1 min-w-0">
-                    <p class="text-sm font-medium text-primary truncate">Guest User</p>
-                    <p class="text-xs text-muted truncate">Local Session</p>
+                <div class="flex-1 min-w-0 md:group-data-[state=collapsed]:hidden">
+                    <p id="profile-name" class="text-sm font-medium text-primary truncate">Log In</p>
+                    <p id="profile-subtitle" class="text-xs text-muted truncate hidden"></p>
                 </div>
-                <svg class="w-4 h-4 text-muted" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg id="profile-chevron" class="w-4 h-4 text-muted flex-shrink-0 hidden md:group-data-[state=collapsed]:hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                         d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
                 </svg>
             </button>
+
+            <!-- Account Dropdown Menu -->
+            <div id="account-dropdown-menu" role="menu"
+                class="hidden absolute bottom-[calc(100%+8px)] left-3 w-[calc(100%-24px)] md:group-data-[state=collapsed]:w-56 md:group-data-[state=collapsed]:left-2 bg-surface border border-border rounded-xl shadow-lg z-50 flex flex-col overflow-hidden text-sm">
+                
+                <!-- User Info Header -->
+                <div class="px-3 py-3 border-b border-border flex items-center gap-3">
+                    <div id="dropdown-profile-avatar" class="w-8 h-8 rounded-full bg-gradient-to-tr from-brand to-purple-500 flex-shrink-0 flex items-center justify-center text-inverse text-sm font-semibold">U</div>
+                    <div class="flex-1 min-w-0">
+                        <p id="dropdown-profile-name" class="text-sm font-medium text-primary truncate">Guest User</p>
+                    </div>
+                </div>
+                
+                <!-- Menu Items -->
+                <div class="py-1">
+                    <button role="menuitem" tabindex="0" onclick="logout()" class="w-full flex items-center gap-2 px-3 py-2 text-left text-error hover:bg-hover focus:bg-hover outline-none transition-colors cursor-pointer">
+                        <svg class="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                        Log out
+                    </button>
+                </div>
+            </div>
         </div>
     </aside>
 
@@ -404,8 +426,8 @@
         <!-- Top bar -->
         <header class="flex items-center justify-between px-4 py-3 border-b border-border bg-navbar backdrop-blur-md sticky top-0 z-20 transition-colors duration-200">
             <div class="flex items-center gap-3 min-w-0">
-                <button id="btn-toggle-sidebar" onclick="toggleSidebar()"
-                    class="lg:hidden p-1.5 rounded-lg hover:bg-hover focus-visible:ring-2 focus-visible:ring-focus outline-none transition-colors text-muted hover:text-primary cursor-pointer">
+                <button id="btn-toggle-sidebar" onclick="toggleSidebar()" title="Toggle Sidebar"
+                    class="p-1.5 rounded-lg hover:bg-hover focus-visible:ring-2 focus-visible:ring-focus outline-none transition-colors text-muted hover:text-primary cursor-pointer">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
                     </svg>
@@ -533,6 +555,29 @@
             </div>
         </div>
     </main>
+
+    <!-- New Chat Warning Modal -->
+    <div id="new-chat-modal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm hidden opacity-0 transition-opacity duration-200">
+        <div class="bg-surface border border-border rounded-2xl shadow-xl w-full max-w-[360px] mx-4 p-6 transform scale-95 transition-transform duration-200" id="new-chat-modal-content">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold text-primary tracking-tight">Start New Chat?</h2>
+                <button onclick="closeNewChatModal()" class="text-muted hover:text-primary transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand rounded cursor-pointer">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <p class="text-sm text-muted mb-6 leading-relaxed">
+                As a guest, your current conversation is only saved locally. Starting a new chat will clear the current screen. Log in to save it permanently.
+            </p>
+            <div class="flex flex-col gap-2.5">
+                <button onclick="confirmNewChat()" class="w-full flex justify-center items-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-inverse bg-brand hover:bg-brand/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand transition-colors cursor-pointer">
+                    Clear & Start New
+                </button>
+                <button onclick="openAuthFromNewChat()" class="w-full flex justify-center items-center py-2.5 px-4 border border-border rounded-lg shadow-sm text-sm font-medium text-primary bg-surface hover:bg-hover focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand transition-colors cursor-pointer">
+                    Log In
+                </button>
+            </div>
+        </div>
+    </div>
 
     <script src="script.js"></script>
 </body>
