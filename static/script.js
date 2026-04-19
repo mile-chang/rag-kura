@@ -29,6 +29,7 @@ const AVAILABLE_MODELS = [
 let selectedModelId = "qwen3.5:2b";
 let isThinkingEnabled = false;
 let isModelDropdownOpen = false;
+let isAccountDropdownOpen = false;
 
 // Automatically fall back to whichever provider is reachable during startup
 // Optimistically default to True so UI isn't blocked pending /api/status.
@@ -149,6 +150,13 @@ document.addEventListener('click', (e) => {
         const modelMenu = $("model-dropdown-menu");
         if (modelMenu) modelMenu.classList.add("hidden");
     }
+    
+    // Account Dropdown
+    if (!e.target.closest('#btn-user-profile') && !e.target.closest('#account-dropdown-menu')) {
+        isAccountDropdownOpen = false;
+        const accountMenu = $("account-dropdown-menu");
+        if (accountMenu) accountMenu.classList.add("hidden");
+    }
 });
 
 
@@ -207,28 +215,58 @@ async function checkAuthStatus() {
 }
 
 function renderAuthUI() {
-    const container = $("auth-container");
-    if (!container) return;
+    const avatar = $("profile-avatar");
+    const name = $("profile-name");
+    const subtitle = $("profile-subtitle");
+    const chevron = $("profile-chevron");
+    const btnProfile = $("btn-user-profile");
+    
+    const ddAvatar = $("dropdown-profile-avatar");
+    const ddName = $("dropdown-profile-name");
+    
+    if (!avatar || !name || !subtitle) return;
 
     if (currentUser) {
-        container.innerHTML = `
-            <div class="flex items-center justify-between px-3 py-2 text-sm text-primary bg-surface-2 rounded-lg border border-border">
-                <div class="flex items-center gap-2 overflow-hidden">
-                    <svg class="w-4 h-4 flex-shrink-0 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
-                    <span class="font-medium truncate max-w-[120px]">${escapeHtml(currentUser.username)}</span>
-                </div>
-                <button onclick="logout()" class="text-muted hover:text-error transition-colors ml-2 flex-shrink-0 outline-none focus-visible:ring-1 focus-visible:ring-error rounded" title="Log out">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
-                </button>
-            </div>
-        `;
+        const initial = (currentUser.username.charAt(0) || "U").toUpperCase();
+        avatar.innerHTML = initial;
+        avatar.className = "w-8 h-8 rounded-full bg-gradient-to-tr from-brand to-purple-500 flex-shrink-0 flex items-center justify-center text-inverse text-sm font-semibold";
+        name.textContent = currentUser.username;
+        subtitle.textContent = "Logged In";
+        subtitle.classList.remove("hidden");
+        if (chevron) chevron.classList.remove("hidden");
+        if (btnProfile) btnProfile.title = "User Profile";
+        
+        if (ddAvatar) ddAvatar.textContent = initial;
+        if (ddName) ddName.textContent = currentUser.username;
     } else {
-        container.innerHTML = `
-            <button onclick="showAuthModal()" class="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm text-brand bg-brand/10 hover:bg-brand/20 border border-brand/20 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none shadow-sm">
-                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
-                <span class="font-medium">Log In / Register</span>
-            </button>
-        `;
+        avatar.innerHTML = '<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>';
+        avatar.className = "w-8 h-8 rounded-full bg-surface-2 border border-border flex-shrink-0 flex items-center justify-center text-muted";
+        name.textContent = "Log In";
+        subtitle.classList.add("hidden");
+        if (chevron) chevron.classList.add("hidden");
+        if (btnProfile) btnProfile.title = "Log In";
+        
+        if (ddAvatar) ddAvatar.textContent = "U";
+        
+        isAccountDropdownOpen = false;
+        const menu = $("account-dropdown-menu");
+        if (menu) menu.classList.add("hidden");
+    }
+}
+
+function handleProfileClick(event) {
+    if (!currentUser) {
+        showAuthModal();
+    } else {
+        if (event) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        isAccountDropdownOpen = !isAccountDropdownOpen;
+        const menu = $("account-dropdown-menu");
+        if (menu) {
+            menu.classList.toggle("hidden", !isAccountDropdownOpen);
+        }
     }
 }
 
@@ -390,15 +428,6 @@ document.addEventListener("DOMContentLoaded", () => {
     const savedTheme = localStorage.getItem('rag-theme') || 'system';
     applyTheme(['system', 'light', 'dark'].includes(savedTheme) ? savedTheme : 'system');
 
-    // Dynamically mount the auth container at the bottom of the sidebar
-    let authContainer = $("auth-container");
-    if (!authContainer && $sidebar) {
-        authContainer = document.createElement("div");
-        authContainer.id = "auth-container";
-        authContainer.className = "mt-auto pt-4 border-t border-border shrink-0 flex flex-col gap-2";
-        $sidebar.appendChild(authContainer);
-    }
-
     injectAuthModal();
     checkAuthStatus();
 
@@ -409,6 +438,11 @@ document.addEventListener("DOMContentLoaded", () => {
     // Query provider availability then render the model picker.
     // checkProviderAvailability() calls renderModelDropdown() internally.
     checkProviderAvailability();
+
+    // Auto-collapse sidebar on mobile devices initially to save space
+    if (window.innerWidth < 768 && $sidebar) {
+        $sidebar.setAttribute("data-state", "collapsed");
+    }
 });
 
 
@@ -419,6 +453,12 @@ async function loadConversations() {
         const res = await apiFetch("/conversations");
         const convs = await res.json();
         renderConversationList(convs);
+
+        // Guest UX: Auto-resume the single ephemeral session so it's not accidentally overwritten
+        if (!currentUser && !activeConversationId && convs.length > 0) {
+            selectConversation(convs[0].id);
+            return;
+        }
 
         // Sync header title, or reset UI if the active conversation was deleted elsewhere
         if (activeConversationId) {
@@ -454,9 +494,60 @@ async function createConversation() {
         $headerTitle.textContent = "New Chat";
         removeWelcome();
         $messageInput.focus();
+        
+        if (window.innerWidth < 768 && $sidebar) {
+            $sidebar.setAttribute("data-state", "collapsed");
+        }
     } catch (err) {
         console.error("Failed to create conversation:", err);
     }
+}
+
+function handleNewChatClick() {
+    if (currentUser) {
+        createConversation();
+    } else {
+        const bubbleCount = document.querySelectorAll('.chat-bubble').length;
+        if (bubbleCount > 0) {
+            showNewChatModal();
+        } else {
+            createConversation();
+        }
+    }
+}
+
+function showNewChatModal() {
+    const modal = $("new-chat-modal");
+    const content = $("new-chat-modal-content");
+    if (!modal) return;
+    
+    modal.classList.remove("hidden");
+    void modal.offsetWidth; // Force reflow to enable CSS transition
+    modal.classList.remove("opacity-0");
+    content.classList.remove("scale-95");
+}
+
+function closeNewChatModal() {
+    const modal = $("new-chat-modal");
+    const content = $("new-chat-modal-content");
+    if (!modal) return;
+    
+    modal.classList.add("opacity-0");
+    content.classList.add("scale-95");
+    
+    setTimeout(() => {
+        modal.classList.add("hidden");
+    }, 200);
+}
+
+function confirmNewChat() {
+    closeNewChatModal();
+    createConversation();
+}
+
+function openAuthFromNewChat() {
+    closeNewChatModal();
+    showAuthModal();
 }
 
 async function selectConversation(id) {
@@ -470,6 +561,10 @@ async function selectConversation(id) {
 
         const btnEdit = $("btn-edit-title");
         if (btnEdit) btnEdit.classList.remove("hidden");
+        
+        if (window.innerWidth < 768 && $sidebar) {
+            $sidebar.setAttribute("data-state", "collapsed");
+        }
     } catch (err) {
         console.error("Failed to load conversation:", err);
     }
@@ -965,10 +1060,11 @@ function toggleRAG() {
 }
 
 
-// -- Sidebar toggle (mobile) ------------------------------------------------
+// -- Sidebar toggle ---------------------------------------------------------
 
 function toggleSidebar() {
-    $sidebar.classList.toggle("hidden");
+    const isCollapsed = $sidebar.getAttribute("data-state") === "collapsed";
+    $sidebar.setAttribute("data-state", isCollapsed ? "expanded" : "collapsed");
 }
 
 
@@ -1090,11 +1186,23 @@ function removeWelcome() {
 }
 
 function showWelcome() {
-    $msgContainer.innerHTML = `
-        <div id="welcome-state" class="flex flex-col items-center justify-center h-full pt-24">
-            <div class="text-3xl font-bold text-primary mb-2 tracking-tight">RAG Knowledge Assistant</div>
-            <p class="text-muted text-sm mb-8">Select a conversation or start a new one.</p>
-        </div>`;
+    if (!currentUser) {
+        $msgContainer.innerHTML = `
+            <div id="welcome-state" class="flex flex-col items-center justify-center h-full pt-24 px-4 text-center">
+                <div class="text-3xl font-bold text-primary mb-3 tracking-tight">RAG Knowledge Assistant</div>
+                <p class="text-muted text-sm mb-6 max-w-md">Log in to save and sync your conversations across devices.</p>
+                <button onclick="showAuthModal()" class="flex items-center gap-2 px-5 py-2.5 text-sm text-brand bg-brand/10 hover:bg-brand/20 border border-brand/20 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none shadow-sm cursor-pointer">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
+                    <span class="font-medium">Log In / Register</span>
+                </button>
+            </div>`;
+    } else {
+        $msgContainer.innerHTML = `
+            <div id="welcome-state" class="flex flex-col items-center justify-center h-full pt-24 px-4 text-center">
+                <div class="text-3xl font-bold text-primary mb-2 tracking-tight">RAG Knowledge Assistant</div>
+                <p class="text-muted text-sm mb-8">Select a conversation or start a new one.</p>
+            </div>`;
+    }
 }
 
 

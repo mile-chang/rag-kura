@@ -1,6 +1,6 @@
 """Conversation CRUD routes — /api/conversations."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from api.dependencies import require_client_id
 from database import (
@@ -9,6 +9,7 @@ from database import (
     get_conversation,
     list_conversations,
     update_conversation_title,
+    gc_guest_conversations,
 )
 from security import get_current_user_optional
 from schemas import ConversationDetail, ConversationSummary, TitleUpdate
@@ -28,11 +29,17 @@ async def api_list_conversations(
 
 @router.post("", response_model=ConversationSummary, status_code=201)
 async def api_create_conversation(
+    background_tasks: BackgroundTasks,
     cid: str = Depends(require_client_id),
     user: dict | None = Depends(get_current_user_optional),
 ):
     """Create a new empty conversation and return its descriptor."""
     user_id = user["id"] if user else None
+    
+    if user_id is None:
+        # Execute GC safely in the background so the response is immediate
+        background_tasks.add_task(gc_guest_conversations)
+        
     return create_conversation(cid, user_id=user_id)
 
 

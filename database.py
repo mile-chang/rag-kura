@@ -95,6 +95,9 @@ def _migrate_add_users_table(conn: sqlite3.Connection) -> None:
     if "user_id" not in columns:
         conn.execute("ALTER TABLE conversations ADD COLUMN user_id INTEGER DEFAULT NULL REFERENCES users(id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id)")
+    
+    # Add index for efficient garbage collection queries O(log N)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_updated_at ON conversations(updated_at)")
 
 # -- Timestamp helper --------------------------------------------------------
 
@@ -150,6 +153,10 @@ def create_conversation(client_id: str, title: str = "New Chat", user_id: int | 
     """Insert a new conversation belonging to client_id."""
     conn = _connect()
     try:
+        if user_id is None:
+            # Enforce single conversation for guests: delete any existing local sessions
+            conn.execute("DELETE FROM conversations WHERE client_id = ? AND user_id IS NULL", (client_id,))
+            
         cid = str(uuid.uuid4())
         now = _now()
         conn.execute(
@@ -162,6 +169,20 @@ def create_conversation(client_id: str, title: str = "New Chat", user_id: int | 
     finally:
         conn.close()
 
+def gc_guest_conversations() -> None:
+    """Garbage Collection: Delete orphaned guest conversations older than 24 hours."""
+    conn = _connect()
+    try:
+        cutoff = (datetime.now(_TW_TZ) - timedelta(hours=24)).isoformat()
+        conn.execute(
+            "DELETE FROM conversations WHERE user_id IS NULL AND updated_at < ?",
+            (cutoff,)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"Background GC error: {e}")
+    finally:
+        conn.close()
 
 def list_conversations(client_id: str, user_id: int | None = None) -> list[dict]:
     """Return all conversations for a given client, newest first."""
