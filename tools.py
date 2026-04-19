@@ -13,6 +13,7 @@ Runtime flow:
 """
 
 from datetime import datetime, timezone, timedelta
+import urllib.parse
 
 import httpx
 from ddgs import DDGS
@@ -51,8 +52,9 @@ def get_weather(city: str) -> str:
              humidity, wind, and conditions.
     """
     try:
+        safe_city = urllib.parse.quote(city)
         resp = httpx.get(
-            f"https://wttr.in/{city}",
+            f"https://wttr.in/{safe_city}",
             params={"format": "j1"},
             timeout=_HTTP_TIMEOUT,
             # wttr.in requires a User-Agent or it returns HTML
