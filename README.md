@@ -25,16 +25,12 @@ RAG-Kura is a knowledge assistant backend built with FastAPI, Ollama, and Google
 
 ## Key Features
 
-- **Retrieval-Augmented Generation (RAG)** — Integrates ChromaDB to answer questions based on local document knowledge.
-- **Modern Chat GUI (SPA)** — A responsive single-page application built with HTML/CSS/JS featuring multi-conversation management.
-- **User Authentication & Session Merging** — JWT-based login with automatic migration of anonymous guest conversations to registered accounts.
-- **Dynamic Reasoning (Thinking Mode)** — Dedicated toggles for reasoning models with `parameter` and `model_switch` strategies.
-- **Smart Loading UI** — Real-time detection of model VRAM status with "Waking up engine" indicators for cold starts.
-- **Conversation Persistence** — SQLite-backed history with automatic titling and manual title editing support.
-- **Dual-Track API** — Supports both synchronous JSON responses for external consumers and real-time Server-Sent Events (SSE) streaming for web clients.
-- **Modular Architecture** — Cleanly decoupled backend separating configuration, inference engines, and HTTP route handlers.
-- **Model Registry** — Centralized declaration of model capabilities for intelligent routing.
-- **Security & Capability Guards** — Automatic rejection of unsupported requests (e.g., vision requests to text-only models).
+- **Hybrid AI Routing**: Seamlessly switch between Local (Ollama) and Cloud (Google Gemini) models with automatic capability guards.
+- **Retrieval-Augmented Generation (RAG)**: Chat with your local documents using CPU-efficient embeddings and ChromaDB.
+- **Dynamic Reasoning (Thinking Mode)**: Built-in support for model reasoning parameters with a beautifully collapsible `<think>` block UI.
+- **Seamless Guest Experience**: Start chatting immediately. Guest sessions are auto-saved locally and safely merged upon registration (with GC protection).
+- **Responsive Modern SPA**: A lightweight, Tailwind-powered interface with a smooth collapsible icon-only sidebar and mobile auto-hide.
+- **Real-time Streaming & Tool Calling**: Fast Server-Sent Events (SSE) streaming with integrated web search and utility tools.
 
 ## System Architecture
 

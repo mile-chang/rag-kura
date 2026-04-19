@@ -15,7 +15,7 @@
 - [x] Add SSE Streaming response (`StreamingResponse`)
   - Thinking mode: Toggle-able `<think>` block, then stream final response
 - [x] Implement Dark/Light mode toggle
-- [ ] Implement user login/logout (persistence session)
+- [x] Implement user login/logout (persistence session)
 - [ ] Implement message editing (edit and resend)
 - [ ] Add multi-modal file support (Images, PDF tables)
 
