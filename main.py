@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from database import init_db
-from api import conversations, messages, knowledge, models
+from api import auth, conversations, messages, knowledge, models
 
 app = FastAPI(
     title="RAG Knowledge Assistant API",
@@ -27,6 +27,7 @@ app = FastAPI(
 
 init_db()
 
+app.include_router(auth.router)
 app.include_router(conversations.router)
 app.include_router(messages.router)
 app.include_router(knowledge.router)

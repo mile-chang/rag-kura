@@ -8,6 +8,7 @@ from starlette.responses import StreamingResponse
 from api.dependencies import require_client_id
 from database import add_message, get_conversation, update_conversation_title
 from inference import run_inference, run_inference_stream
+from security import get_current_user_optional
 from schemas import MessageRequest, MessageResponse
 
 router = APIRouter(prefix="/api/conversations", tags=["messages"])
@@ -30,6 +31,7 @@ async def api_send_message(
     payload: MessageRequest,
     request: Request,
     cid: str = Depends(require_client_id),
+    user: dict | None = Depends(get_current_user_optional),
 ):
     """Send a user message, run provider-agnostic inference, and persist both turns.
 
@@ -49,7 +51,8 @@ async def api_send_message(
     * The assistant turn is always persisted — in the SSE path this happens
       inside the generator's ``finally`` block, so it survives disconnects.
     """
-    conv = get_conversation(conversation_id, cid)
+    user_id = user["id"] if user else None
+    conv = get_conversation(conversation_id, cid, user_id=user_id)
     if conv is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
