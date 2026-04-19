@@ -10,6 +10,7 @@
 const API = "/api";
 
 let activeConversationId = null;
+let currentUser = null;
 let useRAG = false;
 let isGenerating = false;
 let currentAbortController = null;
@@ -155,7 +156,230 @@ document.addEventListener('click', (e) => {
 
 function apiFetch(path, options = {}) {
     const headers = { "X-Client-ID": clientId, ...(options.headers || {}) };
-    return fetch(`${API}${path}`, { ...options, headers });
+
+    // Auto-inject Authorization header if logged in
+    const token = localStorage.getItem("rag-token");
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    return fetch(`${API}${path}`, { ...options, headers }).then(res => {
+        // Global interceptor: 401 with a token means it has expired or is invalid
+        if (res.status === 401 && token) {
+            console.warn("Session expired. Logging out.");
+            localStorage.removeItem("rag-token");
+            
+            alert("Your session has expired. Please log in again.");
+            // Reload the page to completely reset the SPA state to guest mode
+            window.location.reload(); 
+        }
+        return res;
+    });
+}
+
+
+// -- Authentication ---------------------------------------------------------
+
+async function checkAuthStatus() {
+    const token = localStorage.getItem("rag-token");
+    if (!token) {
+        currentUser = null;
+        renderAuthUI();
+        return;
+    }
+    try {
+        // Use native fetch to bypass our global 401 interceptor loop during startup
+        const res = await fetch(`${API}/users/me`, {
+            headers: { "Authorization": `Bearer ${token}` }
+        });
+        
+        if (res.ok) {
+            currentUser = await res.json();
+            renderAuthUI();
+        } else {
+            localStorage.removeItem("rag-token");
+            currentUser = null;
+            renderAuthUI();
+        }
+    } catch (err) {
+        console.error("Auth check failed:", err);
+    }
+}
+
+function renderAuthUI() {
+    const container = $("auth-container");
+    if (!container) return;
+
+    if (currentUser) {
+        container.innerHTML = `
+            <div class="flex items-center justify-between px-3 py-2 text-sm text-primary bg-surface-2 rounded-lg border border-border">
+                <div class="flex items-center gap-2 overflow-hidden">
+                    <svg class="w-4 h-4 flex-shrink-0 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+                    <span class="font-medium truncate max-w-[120px]">${escapeHtml(currentUser.username)}</span>
+                </div>
+                <button onclick="logout()" class="text-muted hover:text-error transition-colors ml-2 flex-shrink-0 outline-none focus-visible:ring-1 focus-visible:ring-error rounded" title="Log out">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+                </button>
+            </div>
+        `;
+    } else {
+        container.innerHTML = `
+            <button onclick="showAuthModal()" class="w-full flex items-center justify-center gap-2 px-3 py-2.5 text-sm text-brand bg-brand/10 hover:bg-brand/20 border border-brand/20 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none shadow-sm">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
+                <span class="font-medium">Log In / Register</span>
+            </button>
+        `;
+    }
+}
+
+function injectAuthModal() {
+    if ($("auth-modal")) return;
+    
+    const modal = document.createElement("div");
+    modal.id = "auth-modal";
+    modal.className = "fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm hidden opacity-0 transition-opacity duration-200";
+    modal.innerHTML = `
+        <div class="bg-surface border border-border rounded-2xl shadow-xl w-full max-w-[360px] mx-4 p-6 transform scale-95 transition-transform duration-200" id="auth-modal-content">
+            <div class="flex justify-between items-center mb-6">
+                <h2 class="text-xl font-bold text-primary tracking-tight" id="auth-modal-title">Log In</h2>
+                <button onclick="closeAuthModal()" class="text-muted hover:text-primary transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand rounded">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                </button>
+            </div>
+            <form id="auth-form" onsubmit="handleAuthSubmit(event)">
+                <div class="mb-4">
+                    <label class="block text-xs font-semibold text-muted mb-1.5 uppercase tracking-wider">Username</label>
+                    <input type="text" id="auth-username" required autocomplete="username" class="w-full bg-input border border-border rounded-lg px-3 py-2 text-primary text-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand transition-shadow" placeholder="Enter username">
+                </div>
+                <div class="mb-6">
+                    <label class="block text-xs font-semibold text-muted mb-1.5 uppercase tracking-wider">Password</label>
+                    <input type="password" id="auth-password" required autocomplete="current-password" class="w-full bg-input border border-border rounded-lg px-3 py-2 text-primary text-sm outline-none focus:border-brand focus:ring-1 focus:ring-brand transition-shadow" placeholder="Enter password">
+                </div>
+                <div id="auth-error" class="hidden mb-4 text-xs text-error font-medium bg-error/10 border border-error/20 rounded-lg px-3 py-2.5"></div>
+                <button type="submit" id="auth-submit-btn" class="w-full flex justify-center items-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-inverse bg-brand hover:bg-brand/90 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand transition-colors">
+                    Log In
+                </button>
+            </form>
+            <div class="mt-6 text-center text-sm text-muted">
+                <span id="auth-toggle-text">Don't have an account?</span>
+                <button type="button" onclick="toggleAuthMode()" class="text-brand hover:text-brand/80 hover:underline font-medium outline-none focus-visible:ring-2 focus-visible:ring-brand rounded ml-1 transition-colors" id="auth-toggle-btn">Register</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+    
+    modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeAuthModal();
+    });
+}
+
+let isLoginMode = true;
+
+function showAuthModal() {
+    const modal = $("auth-modal");
+    const content = $("auth-modal-content");
+    if (!modal) return;
+    
+    modal.classList.remove("hidden");
+    void modal.offsetWidth; // Force reflow to enable CSS transition
+    modal.classList.remove("opacity-0");
+    content.classList.remove("scale-95");
+    
+    $("auth-username").focus();
+    $("auth-error").classList.add("hidden");
+}
+
+function closeAuthModal() {
+    const modal = $("auth-modal");
+    const content = $("auth-modal-content");
+    if (!modal) return;
+    
+    modal.classList.add("opacity-0");
+    content.classList.add("scale-95");
+    
+    setTimeout(() => {
+        modal.classList.add("hidden");
+        $("auth-form").reset();
+    }, 200);
+}
+
+function toggleAuthMode() {
+    isLoginMode = !isLoginMode;
+    $("auth-modal-title").textContent = isLoginMode ? "Log In" : "Register";
+    $("auth-submit-btn").textContent = isLoginMode ? "Log In" : "Create Account";
+    $("auth-toggle-text").textContent = isLoginMode ? "Don't have an account?" : "Already have an account?";
+    $("auth-toggle-btn").textContent = isLoginMode ? "Register" : "Log In";
+    $("auth-error").classList.add("hidden");
+}
+
+async function handleAuthSubmit(event) {
+    event.preventDefault();
+    const username = $("auth-username").value.trim();
+    const password = $("auth-password").value;
+    const btn = $("auth-submit-btn");
+    const errorEl = $("auth-error");
+    
+    if (!username || !password) return;
+
+    btn.disabled = true;
+    const originalText = btn.textContent;
+    btn.innerHTML = `<svg class="animate-spin h-4 w-4 mr-2" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Processing...`;
+    errorEl.classList.add("hidden");
+
+    try {
+        if (!isLoginMode) {
+            // Register flow
+            const regRes = await fetch(`${API}/users`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ username, password })
+            });
+            
+            if (!regRes.ok) {
+                const err = await regRes.json();
+                throw new Error(err.detail || "Registration failed.");
+            }
+        }
+
+        // Login flow (with Anonymous Merging via X-Client-ID)
+        const loginRes = await fetch(`${API}/sessions`, {
+            method: "POST",
+            headers: { 
+                "Content-Type": "application/json",
+                "X-Client-ID": clientId
+            },
+            body: JSON.stringify({ username, password })
+        });
+
+        if (!loginRes.ok) {
+            const err = await loginRes.json();
+            throw new Error(err.detail || "Login failed.");
+        }
+
+        const data = await loginRes.json();
+        localStorage.setItem("rag-token", data.access_token);
+        
+        closeAuthModal();
+        
+        // Re-fetch user profile and re-render UI
+        await checkAuthStatus();
+        
+        // Re-fetch conversations (Anonymous records are now merged!)
+        await loadConversations();
+
+    } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.classList.remove("hidden");
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+}
+
+function logout() {
+    localStorage.removeItem("rag-token");
+    // Fully reset SPA to guarantee clean guest state
+    window.location.reload();
 }
 
 
@@ -165,6 +389,18 @@ document.addEventListener("DOMContentLoaded", () => {
     // Init theme
     const savedTheme = localStorage.getItem('rag-theme') || 'system';
     applyTheme(['system', 'light', 'dark'].includes(savedTheme) ? savedTheme : 'system');
+
+    // Dynamically mount the auth container at the bottom of the sidebar
+    let authContainer = $("auth-container");
+    if (!authContainer && $sidebar) {
+        authContainer = document.createElement("div");
+        authContainer.id = "auth-container";
+        authContainer.className = "mt-auto pt-4 border-t border-border shrink-0 flex flex-col gap-2";
+        $sidebar.appendChild(authContainer);
+    }
+
+    injectAuthModal();
+    checkAuthStatus();
 
     loadConversations();
     $messageInput.addEventListener("input", () => {
