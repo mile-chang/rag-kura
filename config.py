@@ -19,6 +19,12 @@ except ImportError:
     pass
 
 # ---------------------------------------------------------------------------
+# Authentication & Security
+# ---------------------------------------------------------------------------
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev_secret_key_change_in_production")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "10080")) # Default 7 days
+
+# ---------------------------------------------------------------------------
 # Optional dependency: Ollama (local model inference)
 # ---------------------------------------------------------------------------
 try:

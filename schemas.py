@@ -48,3 +48,28 @@ class TitleUpdate(BaseModel):
     """Payload for renaming a conversation."""
 
     title: str
+
+
+class UserCreate(BaseModel):
+    """Payload for user registration."""
+    username: str
+    password: str
+
+
+class UserLogin(BaseModel):
+    """Payload for user login."""
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    """JWT token response."""
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserResponse(BaseModel):
+    """Safe user profile response (excluding password hash)."""
+    id: int
+    username: str
+    created_at: str

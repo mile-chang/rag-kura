@@ -13,3 +13,5 @@ pypdf==6.9.2
 python-multipart==0.0.20
 google-genai
 python-dotenv
+PyJWT
+bcrypt
