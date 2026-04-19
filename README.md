@@ -27,6 +27,7 @@ RAG-Kura is a knowledge assistant backend built with FastAPI, Ollama, and Google
 
 - **Retrieval-Augmented Generation (RAG)** — Integrates ChromaDB to answer questions based on local document knowledge.
 - **Modern Chat GUI (SPA)** — A responsive single-page application built with HTML/CSS/JS featuring multi-conversation management.
+- **User Authentication & Session Merging** — JWT-based login with automatic migration of anonymous guest conversations to registered accounts.
 - **Dynamic Reasoning (Thinking Mode)** — Dedicated toggles for reasoning models with `parameter` and `model_switch` strategies.
 - **Smart Loading UI** — Real-time detection of model VRAM status with "Waking up engine" indicators for cold starts.
 - **Conversation Persistence** — SQLite-backed history with automatic titling and manual title editing support.
@@ -123,7 +124,7 @@ pip install -r requirements.txt
 
 # Environment Setup
 cp .env.example .env
-# Edit .env and paste your GEMINI_API_KEY if you intend to use Cloud reasoning models
+# Edit .env to set your GEMINI_API_KEY (for cloud models) and JWT_SECRET_KEY (for authentication)
 
 # Ingest Knowledge (Optional)
 # Place Markdown files in docs/, then run:
@@ -149,6 +150,9 @@ Detailed tasks are in `TODO.md`.
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| POST | `/api/users` | Register a new user account |
+| POST | `/api/sessions` | Login and issue JWT (merges anonymous history) |
+| GET | `/api/users/me` | Get currently authenticated user profile |
 | GET | `/api/conversations` | List all conversations |
 | POST | `/api/conversations` | Create a new session |
 | GET | `/api/conversations/{id}`| Get session history |
@@ -189,6 +193,7 @@ rag-kura/
 | **Backend Core** | FastAPI, SQLite | Async execution, dynamic routing, and persistence |
 | **Retrieval (RAG)** | LangChain, ChromaDB | Local vector store, Markdown-based knowledge base |
 | **Embedding Model** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU Only**, SOTA Chinese embeddings, VRAM-efficient |
+| **Security** | PyJWT, bcrypt | Stateless JWT authentication and secure password hashing |
 | **Inference Engines** | [**Ollama**](https://ollama.com/) / **Google Gemini** | Hybrid local/cloud model runtime with Tool Calling logic |
 
 ## Security

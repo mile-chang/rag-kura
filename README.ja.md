@@ -29,6 +29,7 @@ RAG-Kura は、FastAPI、Ollama、および Google Gemini で構築されたナ�
 
 - **検索拡張生成 (RAG)** — ChromaDBを統合し、ローカルドキュメントの知識に基づいて質問に応答。
 - **モダンなチャット UI (SPA)** — HTML/CSS/JS で構築されたレスポンシブなシングルページアプリケーション。
+- **ユーザー認証とセッション統合** — JWT ベースのログインシステム。ゲスト時の対話履歴を登録アカウントへ自動的に移行します。
 - **動的推論トグル (思考モード)** — 推論モデル向けに `parameter` と `model_switch` 戦略をサポート。
 - **スマートなロード UI** — モデルの VRAM 状態をリアルタイムで検知し、ロード中のインジケーターを表示。
 - **対話の永続化** — SQLite による履歴保存、タイトルの自動生成および手動編集に対応。
@@ -125,7 +126,7 @@ pip install -r requirements.txt
 
 # 環境設定
 cp .env.example .env
-# クラウド推論モデルを使用する場合は、.env を編集して GEMINI_API_KEY を貼り付けてください
+# クラウドモデルや認証機能を使用する場合は、.env を編集して GEMINI_API_KEY や JWT_SECRET_KEY を設定してください
 
 # ナレッジの取り込み（オプション）
 # Markdown ファイルを docs/ に配置し、以下を実行：
@@ -151,6 +152,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 | メソッド | エンドポイント | 説明 |
 |----------|---------------|------|
+| POST | `/api/users` | 新規ユーザーアカウントの登録 |
+| POST | `/api/sessions` | ログインおよび JWT の発行（ゲスト履歴の自動マージ） |
+| GET | `/api/users/me` | 現在ログインしているユーザー情報の取得 |
 | GET | `/api/conversations` | 對話一覧の取得 |
 | POST | `/api/conversations` | 新規対話の作成 |
 | GET | `/api/conversations/{id}` | 對話履歴の取得 |
@@ -191,6 +195,7 @@ rag-kura/
 | **バックエンド核心** | FastAPI, SQLite | 非同期推論、動的ルーティング、永続化に対応 |
 | **知識検索 (RAG)** | LangChain, ChromaDB | ローカルベクトルストア、Markdown 形式に対応 |
 | **埋め込みモデル** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU 実行**、SOTA 中文埋め込み技術、VRAM 節約 |
+| **セキュリティ** | PyJWT, bcrypt | ステートレスな JWT 認証と安全なパスワードハッシュ化 |
 | **推論エンジン** | [**Ollama**](https://ollama.com/) / **Google Gemini** | ハイブリッド（ローカル/クラウド）推論ランタイムおよび関数呼び出し（Tool Calling） |
 
 ## セキュリティ

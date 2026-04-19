@@ -29,6 +29,7 @@ RAG-Kura 是一個支援本地與雲端混合推論的知識庫助理後端，�
 
 - **檢索增強生成 (RAG)** — 整合 ChromaDB 向量資料庫，基於本地文件進行問答
 - **現代化聊天介面 (SPA)** — 使用 HTML/CSS/JS 打造的單頁式應用，支援多對話管理
+- **使用者認證與對話綁定** — 基於 JWT 的登入系統，並支援將未登入時的訪客對話無縫轉移至註冊帳號下
 - **思考模式 (Thinking Mode)** — 針對推理模型提供專屬開關，支援 `parameter` 與 `model_switch` 策略
 - **智慧負載提示** — 自動檢測模型是否載入 GPU，並提供「正在載入引擎」的溫馨提示
 - **對話持久化** — 使用 SQLite 儲存對話紀錄，支援標題自動生成與手動編輯
@@ -125,7 +126,7 @@ pip install -r requirements.txt
 
 # 環境設定
 cp .env.example .env
-# 請編輯 .env 檔案並貼上您的 GEMINI_API_KEY（若打算使用雲端模型）
+# 請編輯 .env 檔案並設定您的 GEMINI_API_KEY (雲端模型) 與 JWT_SECRET_KEY (認證金鑰)
 
 # 匯入知識庫 (可選)
 # 將 Markdown 檔案放入 docs/ 資料夾，然後執行：
@@ -151,6 +152,9 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 | 方法 | 端點 | 說明 |
 |------|------|------|
+| POST | `/api/users` | 註冊新使用者帳號 |
+| POST | `/api/sessions` | 登入並發放 JWT (自動合併訪客歷史紀錄) |
+| GET | `/api/users/me` | 取得當前登入的使用者資訊 |
 | GET | `/api/conversations` | 取得對話清單 |
 | POST | `/api/conversations` | 建立新對話 |
 | GET | `/api/conversations/{id}` | 取得對話詳細內容與歷史 |
@@ -191,6 +195,7 @@ rag-kura/
 | **後端核心** | FastAPI, SQLite | 支援異步推論、動態路由與 Client 隔離 |
 | **知識檢索 (RAG)** | LangChain, ChromaDB | 本地向量資料庫、支援 Markdown 知識庫 |
 | **向量化模型** | [**bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5) | **CPU 運行**，SOTA 中文嵌入技術，省下 VRAM |
+| **安全性** | PyJWT, bcrypt | 無狀態 JWT 認證與安全的密碼雜湊 |
 | **推論引擎** | [**Ollama**](https://ollama.com/) / **Google Gemini** | 混合式地端與雲端模型推論引擎 (支援 Tool Calling 邏輯) |
 
 ## 安全性
