@@ -229,7 +229,7 @@ function renderAuthUI() {
     if (currentUser) {
         const initial = (currentUser.username.charAt(0) || "U").toUpperCase();
         avatar.innerHTML = initial;
-        avatar.className = "w-8 h-8 rounded-full bg-gradient-to-tr from-brand to-purple-500 flex-shrink-0 flex items-center justify-center text-inverse text-sm font-semibold";
+        avatar.className = "w-8 h-8 rounded-full bg-avatar-bg text-avatar-text flex-shrink-0 flex items-center justify-center text-sm font-semibold";
         name.textContent = currentUser.username;
         subtitle.textContent = "Logged In";
         subtitle.classList.remove("hidden");
@@ -280,7 +280,7 @@ function injectAuthModal() {
         <div class="bg-surface border border-border rounded-2xl shadow-xl w-full max-w-[360px] mx-4 p-6 transform scale-95 transition-transform duration-200" id="auth-modal-content">
             <div class="flex justify-between items-center mb-6">
                 <h2 class="text-xl font-bold text-primary tracking-tight" id="auth-modal-title">Log In</h2>
-                <button onclick="closeAuthModal()" class="text-muted hover:text-primary transition-colors outline-none focus-visible:ring-2 focus-visible:ring-brand rounded">
+                <button onclick="closeAuthModal()" class="text-muted hover:text-primary transition-colors outline-none focus-visible:ring-2 focus-visible:ring-border rounded">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
                 </button>
             </div>
@@ -300,7 +300,7 @@ function injectAuthModal() {
             </form>
             <div class="mt-6 text-center text-sm text-muted">
                 <span id="auth-toggle-text">Don't have an account?</span>
-                <button type="button" onclick="toggleAuthMode()" class="text-brand hover:text-brand/80 hover:underline font-medium outline-none focus-visible:ring-2 focus-visible:ring-brand rounded ml-1 transition-colors" id="auth-toggle-btn">Register</button>
+                <button type="button" onclick="toggleAuthMode()" class="text-brand hover:text-brand/80 hover:underline font-medium outline-none focus-visible:ring-2 focus-visible:ring-border rounded ml-1 transition-colors" id="auth-toggle-btn">Register</button>
             </div>
         </div>
     `;
@@ -755,12 +755,17 @@ async function sendMessage() {
  *
  * @param {string} text        The user message text.
  * @param {string} thinkingId  ID of the thinking indicator element to update.
+ * @param {number} editMsgId   Optional. If provided, sends a PUT request to edit the message.
  */
-async function sendMessageStream(text, thinkingId) {
+async function sendMessageStream(text, thinkingId, editMsgId = null) {
+    const url = editMsgId 
+        ? `/conversations/${activeConversationId}/messages/${editMsgId}`
+        : `/conversations/${activeConversationId}/messages`;
+    
     const res = await apiFetch(
-        `/conversations/${activeConversationId}/messages`,
+        url,
         {
-            method: "POST",
+            method: editMsgId ? "PUT" : "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
                 message: text,
@@ -787,10 +792,12 @@ async function sendMessageStream(text, thinkingId) {
     wrapper.id = bubbleId;
     wrapper.className = "chat-bubble";
     wrapper.innerHTML = `
-        <div class="flex justify-start">
-            <div class="max-w-[85%]">
+        <div class="flex justify-start w-full group">
+            <div class="max-w-[85%] w-full">
                 <div class="msg-content text-sm text-primary leading-relaxed"></div>
-                <div class="msg-meta mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted opacity-80 hidden"></div>
+                <div class="flex items-center justify-between mt-2">
+                    <div class="msg-meta flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted opacity-80 hidden"></div>
+                </div>
             </div>
         </div>`;
     $msgContainer.appendChild(wrapper);
@@ -825,7 +832,7 @@ async function sendMessageStream(text, thinkingId) {
         thinkEl = document.createElement("div");
         thinkEl.className = "think-accordion mb-3 rounded-xl border border-border bg-surface-2 overflow-hidden";
         thinkEl.innerHTML = `
-            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-muted hover:text-primary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
+            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-muted hover:text-primary outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
                 <svg class="think-spinner w-4 h-4 flex-shrink-0 text-brand" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path stroke-linecap="round" stroke-linejoin="round" d="M12 3v3m0 12v3M3 12h3m12 0h3M5.636 5.636l2.122 2.122m8.484 8.484l2.122 2.122M5.636 18.364l2.122-2.122m8.484-8.484l2.122-2.122"/>
                 </svg>
@@ -977,8 +984,12 @@ async function sendMessageStream(text, thinkingId) {
                             ${useRAG ? '<span class="opacity-50">|</span><span class="text-brand">RAG</span>' : ""}
                         `;
                         $meta.classList.remove("hidden");
+                        const $actions = wrapper.querySelector(".msg-actions");
+                        if ($actions) $actions.classList.remove("hidden");
                         // Refresh sidebar (title may have been auto-generated)
                         await loadConversations();
+                        // Refresh UI to get the new database IDs for just-generated messages
+                        await selectConversation(activeConversationId);
                         break;
                     }
 
@@ -1013,6 +1024,66 @@ function stopGeneration() {
     }, 400);
 }
 
+// -- Edit Message -----------------------------------------------------------
+
+function enableEditMode(btn, msgId) {
+    const bubble = btn.closest('.chat-bubble');
+    const contentEl = bubble.querySelector('.user-msg-content');
+    const currentText = contentEl.textContent;
+
+    bubble.innerHTML = `
+        <div class="flex justify-end w-full">
+            <div class="w-full max-w-[85%] bg-surface border border-brand/40 rounded-2xl p-3 shadow-sm">
+                <textarea class="w-full bg-transparent text-sm text-primary outline-none resize-none min-h-[80px]" id="edit-area-${msgId}">${escapeHtml(currentText)}</textarea>
+                <div class="flex justify-end gap-2 mt-2">
+                    <button onclick="selectConversation(activeConversationId)" class="px-3 py-1.5 text-xs text-muted hover:text-primary transition-colors">Cancel</button>
+                    <button onclick="submitEdit(${msgId})" class="px-3 py-1.5 text-xs bg-brand text-inverse rounded hover:bg-brand/90 transition-colors shadow-sm">Save & Submit</button>
+                </div>
+            </div>
+        </div>
+    `;
+    const textarea = document.getElementById(`edit-area-${msgId}`);
+    textarea.focus();
+    textarea.selectionStart = textarea.value.length;
+}
+
+async function submitEdit(msgId) {
+    const textarea = document.getElementById(`edit-area-${msgId}`);
+    const newText = textarea.value.trim();
+    if (!newText || isGenerating) return;
+
+    currentAbortController = new AbortController();
+    isStopping = false;
+    setGenerating(true);
+
+    // Truncate UI: Remove all bubbles starting from this one
+    const bubble = textarea.closest('.chat-bubble');
+    while (bubble.nextSibling) {
+        bubble.nextSibling.remove();
+    }
+    
+    // Temporarily render it as a standard user bubble before stream starts
+    bubble.outerHTML = `
+        <div class="chat-bubble" data-id="${msgId}">
+            <div class="flex justify-end w-full group">
+                <div class="max-w-[80%] flex flex-col items-end">
+                    <div class="bg-surface-2  rounded-2xl rounded-br-md px-4 pt-3 pb-2">
+                        <div class="user-msg-content text-sm text-primary leading-relaxed whitespace-pre-wrap">${escapeHtml(newText)}</div>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+    
+    const thinkingId = appendThinking();
+
+    try {
+        await sendMessageStream(newText, thinkingId, msgId);
+    } catch (err) {
+        removeThinking(thinkingId);
+        appendMessage("assistant", `Error: ${err.message}`);
+        setGenerating(false);
+    }
+}
 
 // -- File upload -------------------------------------------------------------
 
@@ -1073,7 +1144,7 @@ function toggleSidebar() {
 function renderConversationList(convs) {
     $convList.innerHTML = convs.map(c => `
         <button class="conv-item w-full flex items-center justify-between px-3 py-2.5 rounded-lg
-                       text-left text-sm cursor-pointer group focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none
+                       text-left text-sm cursor-pointer group focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border outline-none
                        ${c.id === activeConversationId ? 'bg-surface-2 text-primary' : 'text-muted hover:bg-hover'}"
                 onclick="selectConversation('${c.id}')">
             <span class="truncate flex-1">${escapeHtml(c.title)}</span>
@@ -1102,51 +1173,65 @@ function renderMessages(messages) {
     clearChat();
     for (const msg of messages) {
         if (msg.role === "user") {
-            appendMessage("user", msg.content);
+            appendMessage("user", msg.content, null, msg.id);
         } else if (msg.role === "assistant") {
             appendMessage("assistant", msg.content, {
                 model: msg.model,
                 elapsed: msg.elapsed_seconds,
                 tools: msg.tools_used || [],
                 rag: msg.use_rag,
-            });
+            }, msg.id);
         }
     }
 }
 
-function appendMessage(role, content, meta = null) {
+function appendMessage(role, content, meta = null, msgId = null) {
     removeWelcome();
 
     const wrapper = document.createElement("div");
     wrapper.className = "chat-bubble";
+    if (msgId) wrapper.setAttribute("data-id", msgId);
 
     if (role === "user") {
         wrapper.innerHTML = `
-            <div class="flex justify-end">
-                <div class="max-w-[80%] bg-brand/20 border border-brand/20
-                            rounded-2xl rounded-br-md px-4 py-3">
-                    <p class="text-sm text-primary leading-relaxed whitespace-pre-wrap">${escapeHtml(content)}</p>
+            <div class="flex justify-end w-full group">
+                <div class="max-w-[80%] flex flex-col items-end">
+                    <div class="bg-surface-2 rounded-2xl rounded-br-md px-4 pt-3 pb-2">
+                        <div class="user-msg-content text-sm text-primary leading-relaxed whitespace-pre-wrap">${escapeHtml(content)}</div>
+                    </div>
+                    <div class="flex justify-end gap-1.5 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onclick="copyMessageText(this)" class="p-1 text-muted hover:text-brand transition-colors rounded outline-none" title="Copy message">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                        </button>
+                        ${msgId ? `
+                        <button onclick="enableEditMode(this, ${msgId})" class="p-1 text-muted hover:text-brand transition-colors rounded outline-none" title="Edit message">
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"></path></svg>
+                        </button>
+                        ` : ''}
+                    </div>
                 </div>
             </div>`;
     } else {
         const toolsLabel = meta?.tools?.length ? meta.tools.join(", ") : "None";
         const metaHtml = meta ? `
-            <div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted opacity-80">
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted opacity-80">
                 <span>${meta.model}</span>
                 <span class="opacity-50">|</span>
                 <span>${meta.elapsed}s</span>
                 <span class="opacity-50">|</span>
                 <span>Tools: ${toolsLabel}</span>
                 ${meta.rag ? '<span class="opacity-50">|</span><span class="text-brand">RAG</span>' : ""}
-            </div>` : "";
+            </div>` : "<div></div>";
 
         wrapper.innerHTML = `
-            <div class="flex justify-start">
-                <div class="max-w-[85%]">
+            <div class="flex justify-start w-full group">
+                <div class="max-w-[85%] w-full">
                     <div class="msg-content text-sm text-primary leading-relaxed">
                         ${renderMarkdown(content)}
                     </div>
-                    ${metaHtml}
+                    <div class="flex items-center justify-between mt-2">
+                        ${metaHtml}
+                    </div>
                 </div>
             </div>`;
     }
@@ -1191,7 +1276,7 @@ function showWelcome() {
             <div id="welcome-state" class="flex flex-col items-center justify-center h-full pt-24 px-4 text-center">
                 <div class="text-3xl font-bold text-primary mb-3 tracking-tight">RAG Knowledge Assistant</div>
                 <p class="text-muted text-sm mb-6 max-w-md">Log in to save and sync your conversations across devices.</p>
-                <button onclick="showAuthModal()" class="flex items-center gap-2 px-5 py-2.5 text-sm text-brand bg-brand/10 hover:bg-brand/20 border border-brand/20 rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none shadow-sm cursor-pointer">
+                <button onclick="showAuthModal()" class="flex items-center gap-2 px-5 py-2.5 text-sm text-primary bg-surface-2 hover:bg-surface-2  rounded-lg transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border outline-none shadow-sm cursor-pointer">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 16l-4-4m0 0l4-4m-4 4h14m-5 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h7a3 3 0 013 3v1"/></svg>
                     <span class="font-medium">Log In / Register</span>
                 </button>
@@ -1261,7 +1346,7 @@ function renderMarkdown(text) {
     let html = text.replace(/<think>([\s\S]*?)<\/think>/g, (_, thinkContent) => {
         const escaped = escapeHtml(thinkContent.trim());
         return `<div class="think-accordion mb-3 rounded-xl border border-border bg-surface-2 overflow-hidden">
-            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-muted hover:text-primary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
+            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-muted hover:text-primary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border outline-none transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
                 <svg class="w-4 h-4 flex-shrink-0 text-brand opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
                 <span class="think-label font-medium">Thought Process</span>
                 <svg class="think-chevron w-3 h-3 ml-auto transition-transform" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
@@ -1332,7 +1417,7 @@ function renderMarkdown(text) {
             .replace(/<think>([\s\S]*?)<\/think>/, (__, inner) => inner.trim());
         const escaped = escapeHtml(thinkContent);
         return `<div class="think-accordion mb-3 rounded-xl border border-border bg-surface-2 overflow-hidden">
-            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-muted hover:text-primary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
+            <button class="think-header w-full flex items-center gap-2 px-3 py-2 text-xs text-muted hover:text-primary focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border outline-none transition-colors" onclick="this.closest('.think-accordion').classList.toggle('open')">
                 <svg class="w-4 h-4 flex-shrink-0 text-brand opacity-60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9  5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
                 <span class="think-label font-medium">Thought Process</span>
                 <svg class="think-chevron w-3 h-3 ml-auto transition-transform" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
@@ -1351,6 +1436,24 @@ function escapeHtml(text) {
     const el = document.createElement("div");
     el.textContent = text;
     return el.innerHTML;
+}
+
+function copyMessageText(btn) {
+    const bubble = btn.closest('.chat-bubble');
+    const userContent = bubble.querySelector('.user-msg-content');
+    let text = "";
+    
+    if (userContent) {
+        text = userContent.textContent;
+    }
+    
+    if (text) {
+        navigator.clipboard.writeText(text).then(() => {
+            const originalHTML = btn.innerHTML;
+            btn.innerHTML = `<svg class="w-3.5 h-3.5 text-success" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>`;
+            setTimeout(() => { btn.innerHTML = originalHTML; }, 2000);
+        }).catch(err => console.error("Copy failed", err));
+    }
 }
 
 // -- Provider availability check -------------------------------------------
@@ -1451,7 +1554,7 @@ function renderModelDropdown() {
 
         return `
             <button ${clickHandler} ${tooltip} role="menuitem" tabindex="0"
-                    class="w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand outline-none
+                    class="w-full flex items-center justify-between px-3 py-2.5 text-left transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-border outline-none
                            ${available ? 'hover:bg-hover cursor-pointer' : 'cursor-not-allowed opacity-40'}
                            ${isSelected && available ? 'bg-surface-2' : ''}">
                 <div class="flex items-center gap-2">
