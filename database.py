@@ -279,7 +279,7 @@ def add_message(
         now = _now()
         tools_json = json.dumps(tools_used) if tools_used else None
 
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO messages "
             "(conversation_id, role, content, model, elapsed_seconds, "
             "tools_used, use_rag, created_at) "
@@ -290,6 +290,7 @@ def add_message(
                 int(use_rag) if use_rag is not None else None, now,
             ),
         )
+        msg_id = cursor.lastrowid
         conn.execute(
             "UPDATE conversations SET updated_at = ? WHERE id = ?",
             (now, conversation_id),
@@ -297,7 +298,7 @@ def add_message(
         conn.commit()
 
         return {
-            "role": role, "content": content, "model": model,
+            "id": msg_id, "role": role, "content": content, "model": model,
             "elapsed_seconds": elapsed_seconds,
             "tools_used": tools_used or [],
             "use_rag": use_rag, "created_at": now,
@@ -305,6 +306,25 @@ def add_message(
     finally:
         conn.close()
 
+def edit_message_and_truncate(conversation_id: str, message_id: int, new_content: str) -> None:
+    """Update a user message and delete all subsequent messages in the conversation."""
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE messages SET content = ? WHERE id = ? AND conversation_id = ? AND role = 'user'",
+            (new_content, message_id, conversation_id),
+        )
+        conn.execute(
+            "DELETE FROM messages WHERE conversation_id = ? AND id > ?",
+            (conversation_id, message_id),
+        )
+        conn.execute(
+            "UPDATE conversations SET updated_at = ? WHERE id = ?",
+            (_now(), conversation_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 # -- Serialisation -----------------------------------------------------------
 
